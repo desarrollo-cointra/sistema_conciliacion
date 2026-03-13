@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
-import { Header } from "./components/Header";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { LoginForm } from "./components/LoginForm";
+import { Layout } from "./components/layout/Layout";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DashboardHomePage } from "./pages/DashboardHomePage";
+import { OperacionesPage } from "./pages/OperacionesPage";
+import { ClientesPage } from "./pages/ClientesPage";
+import { TercerosPage } from "./pages/TercerosPage";
+import { UsuariosPage } from "./pages/UsuariosPage";
 import { api } from "./services/api";
 import { Conciliacion, Operacion, User } from "./types";
 
@@ -48,24 +54,39 @@ export function App() {
 
   if (!user) {
     return (
-      <main className="container login-bg">
-        <LoginForm onLogin={handleLogin} />
-      </main>
+      <div className="flex min-h-screen items-center justify-center bg-bg">
+        <div className="w-full max-w-md rounded-2xl border border-border bg-white/90 p-8 shadow-lg shadow-slate-900/5">
+          <LoginForm onLogin={handleLogin} />
+        </div>
+      </div>
     );
   }
 
   return (
-    <main className="container">
-      <Header user={user} onLogout={handleLogout} />
-      <DashboardPage
-        user={user}
-        operaciones={operaciones}
-        conciliaciones={conciliaciones}
-        onRefreshConciliaciones={async () => {
-          const con = await api.conciliaciones();
-          setConciliaciones(con);
-        }}
-      />
-    </main>
+    <Layout user={user} onLogout={handleLogout}>
+      <Routes>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardHomePage user={user} />} />
+        <Route
+          path="/conciliaciones"
+          element={
+            <DashboardPage
+              user={user}
+              operaciones={operaciones}
+              conciliaciones={conciliaciones}
+              onRefreshConciliaciones={async () => {
+                const con = await api.conciliaciones();
+                setConciliaciones(con);
+              }}
+            />
+          }
+        />
+        <Route path="/operaciones" element={<OperacionesPage user={user} />} />
+        <Route path="/clientes" element={<ClientesPage user={user} />} />
+        <Route path="/terceros" element={<TercerosPage user={user} />} />
+        <Route path="/usuarios" element={<UsuariosPage user={user} />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </Layout>
   );
 }

@@ -7,11 +7,12 @@ from app.schemas.common import ORMModel
 
 class ViajeCreate(BaseModel):
     operacion_id: int
+    titulo: str
     fecha_servicio: date
     origen: str
     destino: str
     placa: str
-    conductor: str
+    conductor: str | None = None
     tarifa_tercero: float
     tarifa_cliente: float | None = None
     manifiesto_avansat_id: str | None = None
@@ -23,6 +24,8 @@ class ViajeOut(ORMModel):
     id: int
     operacion_id: int
     tercero_id: int
+    conciliacion_id: int | None
+    titulo: str
     fecha_servicio: date
     origen: str
     destino: str

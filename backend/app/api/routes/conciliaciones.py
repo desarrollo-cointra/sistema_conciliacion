@@ -60,8 +60,8 @@ def create_conciliacion(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
-    if user.rol not in [UserRole.COINTRA, UserRole.TERCERO]:
-        raise HTTPException(status_code=403, detail="Solo Cointra o Tercero puede crear conciliaciones")
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede crear conciliaciones")
 
     operacion = db.get(Operacion, payload.operacion_id)
     if not operacion:
@@ -77,6 +77,48 @@ def create_conciliacion(
     )
     db.add(conc)
     db.flush()
+
+    # Cargar automaticamente todos los viajes PENDIENTES de la operacion
+    viajes_pendientes = (
+        db.query(Viaje)
+        .filter(
+            Viaje.operacion_id == payload.operacion_id,
+            Viaje.conciliado.is_(False),
+            Viaje.fecha_servicio <= payload.fecha_fin,
+        )
+        .order_by(Viaje.fecha_servicio.asc(), Viaje.id.asc())
+        .all()
+    )
+
+    for viaje in viajes_pendientes:
+        item = ConciliacionItem(
+            conciliacion_id=conc.id,
+            tipo=ItemTipo.VIAJE,
+            fecha_servicio=viaje.fecha_servicio,
+            origen=viaje.origen,
+            destino=viaje.destino,
+            placa=viaje.placa,
+            conductor=viaje.conductor,
+            tarifa_tercero=viaje.tarifa_tercero,
+            tarifa_cliente=viaje.tarifa_cliente,
+            rentabilidad=viaje.rentabilidad,
+            manifiesto_avansat_id=viaje.manifiesto_avansat_id,
+            manifiesto_numero=viaje.manifiesto_numero,
+            descripcion=viaje.descripcion,
+            created_by=user.id,
+            cargado_por=viaje.cargado_por,
+        )
+        viaje.conciliado = True
+        viaje.conciliacion_id = conc.id
+        db.add(item)
+        log_change(
+            db,
+            usuario_id=user.id,
+            conciliacion_id=conc.id,
+            campo="viaje_adjuntado",
+            valor_nuevo=f"viaje_id={viaje.id}",
+        )
+
     log_change(
         db,
         usuario_id=user.id,
@@ -145,14 +187,14 @@ def update_estado_conciliacion(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede cambiar estado de conciliacion")
+
     conc = db.get(Conciliacion, conciliacion_id)
     if not conc:
         raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
     operacion = db.get(Operacion, conc.operacion_id)
     _validate_user_access_operacion(user, operacion)
-
-    if user.rol == UserRole.CLIENTE and payload.estado.value not in ["EN_REVISION", "APROBADA"]:
-        raise HTTPException(status_code=403, detail="Cliente solo puede dejar EN_REVISION o APROBADA")
 
     old_estado = conc.estado
     conc.estado = payload.estado
@@ -185,6 +227,8 @@ def create_item(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede crear items")
     conc = db.get(Conciliacion, payload.conciliacion_id)
     if not conc:
         raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
@@ -267,6 +311,9 @@ def update_item_estado(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede cambiar estado de items")
+
     item = db.get(ConciliacionItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item no encontrado")
@@ -275,8 +322,6 @@ def update_item_estado(
     operacion = db.get(Operacion, conc.operacion_id)
     _validate_user_access_operacion(user, operacion)
 
-    if user.rol == UserRole.TERCERO:
-        raise HTTPException(status_code=403, detail="Tercero no puede cambiar estado")
     old_estado = item.estado
     item.estado = payload.estado
     log_change(
@@ -471,6 +516,8 @@ def add_comment(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
+    if user.rol == UserRole.TERCERO:
+        raise HTTPException(status_code=403, detail="Tercero no puede agregar comentarios")
     conc = db.get(Conciliacion, payload.conciliacion_id)
     if not conc:
         raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
@@ -552,8 +599,8 @@ def attach_pending_viajes(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
-    if user.rol not in [UserRole.COINTRA, UserRole.TERCERO]:
-        raise HTTPException(status_code=403, detail="Solo Cointra o Tercero puede adjuntar viajes")
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede adjuntar viajes")
 
     conc = db.get(Conciliacion, conciliacion_id)
     if not conc:
@@ -590,6 +637,7 @@ def attach_pending_viajes(
             cargado_por=viaje.cargado_por,
         )
         viaje.conciliado = True
+        viaje.conciliacion_id = conc.id
         db.add(item)
         log_change(
             db,

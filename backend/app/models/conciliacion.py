@@ -23,3 +23,4 @@ class Conciliacion(Base):
     creador = relationship("Usuario", back_populates="conciliaciones_creadas")
     items = relationship("ConciliacionItem", back_populates="conciliacion", cascade="all, delete-orphan")
     comentarios = relationship("Comentario", back_populates="conciliacion", cascade="all, delete-orphan")
+    viajes = relationship("Viaje", back_populates="conciliacion")

@@ -75,6 +75,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
   async function createViaje(formData: FormData) {
     const payload = {
       operacion_id: Number(formData.get("operacion_id")),
+      titulo: String(formData.get("titulo") || ""),
       fecha_servicio: String(formData.get("fecha_servicio")),
       origen: String(formData.get("origen") || ""),
       destino: String(formData.get("destino") || ""),
@@ -121,10 +122,14 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
   }, [activeModule]);
 
   return (
-    <div className="grid">
-      <section className="module-switch card">
+    <div className="space-y-6">
+      <section className="flex items-center gap-3 rounded-xl border border-border bg-white/90 p-2 shadow-sm">
         <button
-          className={activeModule === "viajes" ? "active" : ""}
+          className={`inline-flex flex-1 items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition ${
+            activeModule === "viajes"
+              ? "bg-primary text-white shadow-sm"
+              : "bg-slate-50 text-slate-700 hover:bg-slate-100"
+          }`}
           onClick={() => {
             setActiveModule("viajes");
             void loadViajes();
@@ -132,16 +137,23 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         >
           Modulo Viajes
         </button>
-        <button className={activeModule === "conciliaciones" ? "active" : ""} onClick={() => setActiveModule("conciliaciones")}>
+        <button
+          className={`inline-flex flex-1 items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition ${
+            activeModule === "conciliaciones"
+              ? "bg-primary text-white shadow-sm"
+              : "bg-slate-50 text-slate-700 hover:bg-slate-100"
+          }`}
+          onClick={() => setActiveModule("conciliaciones")}
+        >
           Modulo Conciliaciones
         </button>
       </section>
 
       {activeModule === "viajes" && (
         <>
-          <div className="split-layout">
-            <section className="card">
-              <h3>Cargar viaje</h3>
+          <div className="grid gap-6 lg:grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)]">
+            <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+              <h3 className="mb-4 text-sm font-semibold text-slate-900">Cargar viaje</h3>
               <form
                 onSubmit={async (e: FormEvent<HTMLFormElement>) => {
                   e.preventDefault();
@@ -149,10 +161,16 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                   e.currentTarget.reset();
                 }}
               >
-                <div className="form-grid">
-                  <div className="field span-2">
-                    <label>Operacion</label>
-                    <select name="operacion_id" required>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Operación
+                    </label>
+                    <select
+                      name="operacion_id"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    >
                       <option value="">Seleccione...</option>
                       {operaciones.map((op) => (
                         <option key={op.id} value={op.id}>
@@ -162,83 +180,181 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                     </select>
                   </div>
 
-                  <div className="field">
-                    <label>Fecha</label>
-                    <input name="fecha_servicio" type="date" required />
-                  </div>
-                  <div className="field">
-                    <label>Manifiesto</label>
-                    <input name="manifiesto_numero" placeholder="AV-12345" />
-                  </div>
-
-                  <div className="field">
-                    <label>Origen</label>
-                    <input name="origen" required />
-                  </div>
-                  <div className="field">
-                    <label>Destino</label>
-                    <input name="destino" required />
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Título del viaje
+                    </label>
+                    <input
+                      name="titulo"
+                      required
+                      placeholder="Ej. Urbano Montevideo"
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
                   </div>
 
-                  <div className="field">
-                    <label>Placa</label>
-                    <input name="placa" required />
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Fecha
+                    </label>
+                    <input
+                      name="fecha_servicio"
+                      type="date"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
                   </div>
-                  <div className="field">
-                    <label>Conductor</label>
-                    <input name="conductor" required />
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Manifiesto
+                    </label>
+                    <input
+                      name="manifiesto_numero"
+                      placeholder="AV-12345"
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
                   </div>
 
-                  <div className="field">
-                    <label>Tarifa Tercero</label>
-                    <input name="tarifa_tercero" type="number" required />
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Origen
+                    </label>
+                    <input
+                      name="origen"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Destino
+                    </label>
+                    <input
+                      name="destino"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Placa
+                    </label>
+                    <input
+                      name="placa"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Conductor (opcional)
+                    </label>
+                    <input
+                      name="conductor"
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Tarifa Tercero
+                    </label>
+                    <input
+                      name="tarifa_tercero"
+                      type="number"
+                      required
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
                   </div>
                   {user.rol !== "TERCERO" && (
-                    <div className="field">
-                      <label>Tarifa Cliente (opcional)</label>
-                      <input name="tarifa_cliente" type="number" />
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                        Tarifa Cliente (opcional)
+                      </label>
+                      <input
+                        name="tarifa_cliente"
+                        type="number"
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                      />
                     </div>
                   )}
 
-                  <div className="field span-2">
-                    <label>Descripcion</label>
-                    <input name="descripcion" placeholder="Observaciones del viaje" />
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                      Descripción
+                    </label>
+                    <input
+                      name="descripcion"
+                      placeholder="Observaciones del viaje"
+                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
                   </div>
                 </div>
-                <button type="submit">Guardar viaje</button>
+                <button
+                  type="submit"
+                  className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary/90"
+                >
+                  Guardar viaje
+                </button>
               </form>
             </section>
 
-            <section className="card wide">
-              <h3>Viajes cargados</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Fecha</th>
-                    <th>Ruta</th>
-                    <th>Placa</th>
-                    <th>Estado</th>
-                    {user.rol !== "CLIENTE" && <th>Tarifa Tercero</th>}
-                    {user.rol !== "TERCERO" && <th>Tarifa Cliente</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {viajes.map((v) => (
-                    <tr key={v.id}>
-                      <td>{v.id}</td>
-                      <td>{v.fecha_servicio}</td>
-                      <td>
-                        {v.origen} - {v.destino}
-                      </td>
-                      <td>{v.placa}</td>
-                      <td>{v.conciliado ? "CONCILIADO" : "PENDIENTE"}</td>
-                      {user.rol !== "CLIENTE" && <td>{v.tarifa_tercero ? money.format(v.tarifa_tercero) : "-"}</td>}
-                      {user.rol !== "TERCERO" && <td>{v.tarifa_cliente ? money.format(v.tarifa_cliente) : "-"}</td>}
+            <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+              <h3 className="mb-3 text-sm font-semibold text-slate-900">Viajes cargados</h3>
+              <div className="overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                      <th className="border-b border-border px-3 py-2 text-left">ID</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Título</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Ruta</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Placa</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Estado</th>
+                      {user.rol !== "CLIENTE" && (
+                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Tercero</th>
+                      )}
+                      {user.rol !== "TERCERO" && (
+                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Cliente</th>
+                      )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {viajes.map((v) => (
+                      <tr key={v.id} className="border-b border-border last:border-0">
+                        <td className="px-3 py-2">{v.id}</td>
+                        <td className="px-3 py-2">{v.fecha_servicio}</td>
+                        <td className="px-3 py-2">{v.titulo}</td>
+                        <td className="px-3 py-2">
+                          {v.origen} - {v.destino}
+                        </td>
+                        <td className="px-3 py-2">{v.placa}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                              v.conciliado
+                                ? "bg-success/10 text-success"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {v.conciliado ? "CONCILIADO" : "PENDIENTE"}
+                          </span>
+                        </td>
+                        {user.rol !== "CLIENTE" && (
+                          <td className="px-3 py-2">
+                            {v.tarifa_tercero ? money.format(v.tarifa_tercero) : "-"}
+                          </td>
+                        )}
+                        {user.rol !== "TERCERO" && (
+                          <td className="px-3 py-2">
+                            {v.tarifa_cliente ? money.format(v.tarifa_cliente) : "-"}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           </div>
         </>
@@ -246,132 +362,202 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
 
       {activeModule === "conciliaciones" && (
         <>
-          <div className="split-layout">
-            <section className="card">
-              <h3>Nueva conciliacion</h3>
-              <form
-                onSubmit={async (e: FormEvent<HTMLFormElement>) => {
-                  e.preventDefault();
-                  await createConciliacion(new FormData(e.currentTarget));
-                  e.currentTarget.reset();
-                }}
-              >
-                <div className="form-grid">
-                  <div className="field span-2">
-                    <label>Operacion</label>
-                    <select name="operacion_id" required>
-                      <option value="">Seleccione...</option>
-                      {operaciones.map((op) => (
-                        <option key={op.id} value={op.id}>
-                          {op.nombre}
-                        </option>
-                      ))}
-                    </select>
+          <div className="grid gap-6 lg:grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)]">
+            {user.rol === "COINTRA" && (
+              <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+                <h3 className="mb-4 text-sm font-semibold text-slate-900">Nueva conciliación</h3>
+                <form
+                  onSubmit={async (e: FormEvent<HTMLFormElement>) => {
+                    e.preventDefault();
+                    await createConciliacion(new FormData(e.currentTarget));
+                    e.currentTarget.reset();
+                  }}
+                >
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                        Operación
+                      </label>
+                      <select
+                        name="operacion_id"
+                        required
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                      >
+                        <option value="">Seleccione...</option>
+                        {operaciones.map((op) => (
+                          <option key={op.id} value={op.id}>
+                            {op.nombre}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                        Nombre
+                      </label>
+                      <input
+                        name="nombre"
+                        required
+                        placeholder="Segunda quincena febrero"
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                        Fecha inicio
+                      </label>
+                      <input
+                        name="fecha_inicio"
+                        type="date"
+                        required
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                        Fecha fin
+                      </label>
+                      <input
+                        name="fecha_fin"
+                        type="date"
+                        required
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                      />
+                    </div>
                   </div>
-                  <div className="field span-2">
-                    <label>Nombre</label>
-                    <input name="nombre" required placeholder="Segunda quincena febrero" />
-                  </div>
-                  <div className="field">
-                    <label>Fecha inicio</label>
-                    <input name="fecha_inicio" type="date" required />
-                  </div>
-                  <div className="field">
-                    <label>Fecha fin</label>
-                    <input name="fecha_fin" type="date" required />
-                  </div>
-                </div>
-                <button type="submit">Crear</button>
-              </form>
-            </section>
+                  <button
+                    type="submit"
+                    className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary/90"
+                  >
+                    Crear
+                  </button>
+                </form>
+              </section>
+            )}
 
-            <section className="card wide">
-              <h3>Conciliaciones</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Nombre</th>
-                    <th>Estado</th>
-                    <th>Periodo</th>
-                    <th>Accion</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {conciliaciones.map((c) => (
-                    <tr key={c.id}>
-                      <td>{c.id}</td>
-                      <td>{c.nombre}</td>
-                      <td>{c.estado}</td>
-                      <td>
-                        {c.fecha_inicio} - {c.fecha_fin}
-                      </td>
-                      <td>
-                        <button onClick={() => loadItems(c.id)}>Ver items</button>
-                      </td>
+            <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+              <h3 className="mb-3 text-sm font-semibold text-slate-900">Conciliaciones</h3>
+              <div className="overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                      <th className="border-b border-border px-3 py-2 text-left">ID</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Nombre</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Estado</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Periodo</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Acción</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {conciliaciones.map((c) => (
+                      <tr key={c.id} className="border-b border-border last:border-0">
+                        <td className="px-3 py-2">{c.id}</td>
+                        <td className="px-3 py-2">{c.nombre}</td>
+                        <td className="px-3 py-2">
+                          <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                            {c.estado}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {c.fecha_inicio} - {c.fecha_fin}
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => loadItems(c.id)}
+                            className="inline-flex items-center rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+                          >
+                            Ver items
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           </div>
 
       {selected && (
-        <section className="card wide">
-          <h3>Viajes pendientes por conciliar</h3>
-          <div className="pending-toolbar">
-            <span>{pendingViajes.length} viajes pendientes en la operacion</span>
-            <button onClick={attachPendingViajes} disabled={selectedViajeIds.length === 0}>
-              Adjuntar seleccionados ({selectedViajeIds.length})
-            </button>
+        <section className="space-y-6 rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+          <div>
+            <h3 className="mb-1 text-sm font-semibold text-slate-900">Viajes pendientes por conciliar</h3>
+            <p className="text-xs text-neutral">
+              {pendingViajes.length} viajes pendientes en la operación
+            </p>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th></th>
-                <th>ID</th>
-                <th>Fecha</th>
-                <th>Ruta</th>
-                <th>Placa</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pendingViajes.map((v) => (
-                <tr key={v.id}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={selectedViajeIds.includes(v.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedViajeIds((prev) => [...prev, v.id]);
-                        } else {
-                          setSelectedViajeIds((prev) => prev.filter((id) => id !== v.id));
-                        }
-                      }}
-                    />
-                  </td>
-                  <td>{v.id}</td>
-                  <td>{v.fecha_servicio}</td>
-                  <td>
-                    {v.origen} - {v.destino}
-                  </td>
-                  <td>{v.placa}</td>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-neutral">
+              Selecciona los viajes que deseas adjuntar a esta conciliación.
+            </span>
+            {user.rol === "COINTRA" && (
+              <button
+                type="button"
+                onClick={attachPendingViajes}
+                disabled={selectedViajeIds.length === 0}
+                className="inline-flex items-center rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition enabled:hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                Adjuntar seleccionados ({selectedViajeIds.length})
+              </button>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                  <th className="border-b border-border px-3 py-2 text-left" />
+                  <th className="border-b border-border px-3 py-2 text-left">ID</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Ruta</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Placa</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {pendingViajes.map((v) => (
+                  <tr key={v.id} className="border-b border-border last:border-0">
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedViajeIds.includes(v.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedViajeIds((prev) => [...prev, v.id]);
+                          } else {
+                            setSelectedViajeIds((prev) => prev.filter((id) => id !== v.id));
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-border text-primary focus:ring-primary/40"
+                      />
+                    </td>
+                    <td className="px-3 py-2">{v.id}</td>
+                    <td className="px-3 py-2">{v.fecha_servicio}</td>
+                    <td className="px-3 py-2">
+                      {v.origen} - {v.destino}
+                    </td>
+                    <td className="px-3 py-2">{v.placa}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-          <h3>Items de conciliacion #{selected.id}</h3>
+          <h3 className="mt-4 text-sm font-semibold text-slate-900">
+            Items de conciliación #{selected.id}
+          </h3>
           <form
-            className="inline-form"
+            className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-[repeat(auto-fit,minmax(160px,1fr))]"
             onSubmit={async (e: FormEvent<HTMLFormElement>) => {
               e.preventDefault();
+              if (user.rol !== "COINTRA") return;
               await createItem(new FormData(e.currentTarget));
               e.currentTarget.reset();
             }}
           >
-            <select name="tipo" defaultValue="VIAJE">
+            <select
+              name="tipo"
+              defaultValue="VIAJE"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+            >
               <option value="VIAJE">VIAJE</option>
               <option value="PEAJE">PEAJE</option>
               <option value="HORA_EXTRA">HORA_EXTRA</option>
@@ -380,55 +566,127 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               <option value="CONDUCTOR_RELEVO">CONDUCTOR_RELEVO</option>
               <option value="OTRO">OTRO</option>
             </select>
-            <input name="fecha_servicio" type="date" required />
-            <input name="origen" placeholder="Origen" />
-            <input name="destino" placeholder="Destino" />
-            <input name="placa" placeholder="Placa" />
-            <input name="conductor" placeholder="Conductor" />
-            {user.rol !== "CLIENTE" && <input name="tarifa_tercero" type="number" placeholder="Tarifa tercero" />}
-            {user.rol !== "TERCERO" && <input name="tarifa_cliente" type="number" placeholder="Tarifa cliente" />}
-            <input name="descripcion" placeholder="Descripcion" />
-            <button type="submit">Agregar item</button>
+            <input
+              name="fecha_servicio"
+              type="date"
+              required
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            <input
+              name="origen"
+              placeholder="Origen"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            <input
+              name="destino"
+              placeholder="Destino"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            <input
+              name="placa"
+              placeholder="Placa"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            <input
+              name="conductor"
+              placeholder="Conductor"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            {user.rol !== "CLIENTE" && (
+              <input
+                name="tarifa_tercero"
+                type="number"
+                placeholder="Tarifa tercero"
+                className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+              />
+            )}
+            {user.rol !== "TERCERO" && (
+              <input
+                name="tarifa_cliente"
+                type="number"
+                placeholder="Tarifa cliente"
+                className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+              />
+            )}
+            <input
+              name="descripcion"
+              placeholder="Descripcion"
+              className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+            />
+            {user.rol === "COINTRA" && (
+              <button
+                type="submit"
+                className="rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary/90"
+              >
+                Agregar item
+              </button>
+            )}
           </form>
 
           {loadingItems ? (
-            <p>Cargando items...</p>
+            <p className="text-sm text-neutral">Cargando items...</p>
           ) : (
             <>
-              {error && <p className="error">{error}</p>}
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Tipo</th>
-                    <th>Estado</th>
-                    <th>Fecha</th>
-                    <th>Origen</th>
-                    <th>Destino</th>
-                    {user.rol !== "CLIENTE" && <th>Tarifa Tercero</th>}
-                    {user.rol !== "TERCERO" && <th>Tarifa Cliente</th>}
-                    {user.rol === "COINTRA" && <th>Rentabilidad %</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.id}</td>
-                      <td>{item.tipo}</td>
-                      <td>{item.estado}</td>
-                      <td>{item.fecha_servicio}</td>
-                      <td>{item.origen || "-"}</td>
-                      <td>{item.destino || "-"}</td>
-                      {user.rol !== "CLIENTE" && <td>{item.tarifa_tercero ? money.format(item.tarifa_tercero) : "-"}</td>}
-                      {user.rol !== "TERCERO" && <td>{item.tarifa_cliente ? money.format(item.tarifa_cliente) : "-"}</td>}
-                      {user.rol === "COINTRA" && <td>{item.rentabilidad ?? "-"}</td>}
+              {error && <p className="text-sm font-medium text-danger">{error}</p>}
+              <div className="overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                      <th className="border-b border-border px-3 py-2 text-left">ID</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Tipo</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Estado</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Origen</th>
+                      <th className="border-b border-border px-3 py-2 text-left">Destino</th>
+                      {user.rol !== "CLIENTE" && (
+                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Tercero</th>
+                      )}
+                      {user.rol !== "TERCERO" && (
+                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Cliente</th>
+                      )}
+                      {user.rol === "COINTRA" && (
+                        <th className="border-b border-border px-3 py-2 text-left">Rentabilidad %</th>
+                      )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="totals">
-                {user.rol !== "CLIENTE" && <span>Total Tercero: {money.format(totals.tarifaTercero)}</span>}
-                {user.rol !== "TERCERO" && <span>Total Cliente: {money.format(totals.tarifaCliente)}</span>}
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr key={item.id} className="border-b border-border last:border-0">
+                        <td className="px-3 py-2">{item.id}</td>
+                        <td className="px-3 py-2">{item.tipo}</td>
+                        <td className="px-3 py-2">
+                          <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                            {item.estado}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">{item.fecha_servicio}</td>
+                        <td className="px-3 py-2">{item.origen || "-"}</td>
+                        <td className="px-3 py-2">{item.destino || "-"}</td>
+                        {user.rol !== "CLIENTE" && (
+                          <td className="px-3 py-2">
+                            {item.tarifa_tercero ? money.format(item.tarifa_tercero) : "-"}
+                          </td>
+                        )}
+                        {user.rol !== "TERCERO" && (
+                          <td className="px-3 py-2">
+                            {item.tarifa_cliente ? money.format(item.tarifa_cliente) : "-"}
+                          </td>
+                        )}
+                        {user.rol === "COINTRA" && (
+                          <td className="px-3 py-2">{item.rentabilidad ?? "-"}</td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-slate-900">
+                {user.rol !== "CLIENTE" && (
+                  <span>Total Tercero: {money.format(totals.tarifaTercero)}</span>
+                )}
+                {user.rol !== "TERCERO" && (
+                  <span>Total Cliente: {money.format(totals.tarifaCliente)}</span>
+                )}
               </div>
             </>
           )}

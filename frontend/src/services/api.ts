@@ -69,11 +69,12 @@ export const api = {
   },
   crearViaje: (payload: {
     operacion_id: number;
+    titulo: string;
     fecha_servicio: string;
     origen: string;
     destino: string;
     placa: string;
-    conductor: string;
+    conductor?: string;
     tarifa_tercero: number;
     tarifa_cliente?: number;
     manifiesto_avansat_id?: string;

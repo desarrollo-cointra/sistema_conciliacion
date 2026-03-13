@@ -41,6 +41,7 @@ def create_viaje(
     viaje = Viaje(
         operacion_id=payload.operacion_id,
         tercero_id=operacion.tercero_id,
+        titulo=payload.titulo,
         fecha_servicio=payload.fecha_servicio,
         origen=payload.origen,
         destino=payload.destino,
@@ -108,11 +109,11 @@ async def bulk_upload_viajes(
 
     headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
     expected = {
+        "titulo",
         "fecha_servicio",
         "origen",
         "destino",
         "placa",
-        "conductor",
         "tarifa_tercero",
     }
     missing = [h for h in expected if h not in headers]
@@ -125,14 +126,17 @@ async def bulk_upload_viajes(
 
     for row_num, row in enumerate(rows[1:], start=2):
         try:
+            titulo = (row[idx["titulo"]] or "").strip() if row[idx["titulo"]] else ""
             fecha_val = row[idx["fecha_servicio"]]
             origen = (row[idx["origen"]] or "").strip() if row[idx["origen"]] else ""
             destino = (row[idx["destino"]] or "").strip() if row[idx["destino"]] else ""
             placa = (row[idx["placa"]] or "").strip() if row[idx["placa"]] else ""
-            conductor = (row[idx["conductor"]] or "").strip() if row[idx["conductor"]] else ""
+            conductor = ""
+            if "conductor" in idx and row[idx["conductor"]]:
+                conductor = (row[idx["conductor"]] or "").strip()
             tarifa_tercero = row[idx["tarifa_tercero"]]
 
-            if not all([fecha_val, origen, destino, placa, conductor, tarifa_tercero]):
+            if not all([titulo, fecha_val, origen, destino, placa, tarifa_tercero]):
                 raise ValueError("faltan campos obligatorios")
 
             fecha_servicio = fecha_val if isinstance(fecha_val, date) else date.fromisoformat(str(fecha_val))
@@ -141,11 +145,12 @@ async def bulk_upload_viajes(
             viaje = Viaje(
                 operacion_id=operacion_id,
                 tercero_id=operacion.tercero_id,
+                titulo=titulo,
                 fecha_servicio=fecha_servicio,
                 origen=origen,
                 destino=destino,
                 placa=placa,
-                conductor=conductor,
+                conductor=conductor or None,
                 tarifa_tercero=tarifa_tercero_num,
                 created_by=user.id,
                 cargado_por=user.rol.value,

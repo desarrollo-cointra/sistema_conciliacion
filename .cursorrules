@@ -1,0 +1,142 @@
+# SISTEMA DE CONCILIACIÓN — COINTRA S.A.S.
+# Área de Análisis de Datos
+# -------------------------------------------------------
+# Lee este archivo completo antes de responder cualquier
+# pregunta o generar cualquier código en este proyecto.
+# -------------------------------------------------------
+
+## CONTEXTO GENERAL
+
+Este es un sistema web de conciliación de servicios de transporte.
+Cointra actúa como operador logístico intermediario entre un Cliente (dueño de la carga)
+y un Tercero (transportador). Cointra cobra al cliente, retiene su rentabilidad y paga al tercero.
+
+Documentación completa en:
+- docs/CONTEXT_GENERAL.md   → reglas de negocio, flujo, actores
+- docs/CONTEXT_DATABASE.md  → esquema PostgreSQL completo
+- docs/CONTEXT_BACKEND.md   → FastAPI, endpoints, servicios
+- docs/CONTEXT_FRONTEND.md  → React + TailwindCSS, componentes, UX
+
+---
+
+## STACK
+
+- Backend:  Python + FastAPI + SQLAlchemy + Alembic
+- Base de datos: PostgreSQL
+- Frontend: React + TailwindCSS + React Router + Axios
+- Correos: SMTP Microsoft (notificaciones@cointra.com.co)
+- Integración externa: API REST Avansat (manifiestos de transporte)
+
+---
+
+## ACTORES Y ROLES
+
+- COINTRA  → administra todo, ve todas las tarifas y rentabilidad
+- CLIENTE  → solo ve sus conciliaciones y la tarifa que paga a Cointra
+- TERCERO  → carga viajes/peajes/adicionales. Ve sus conciliaciones en modo lectura. No puede crearlas ni modificarlas.
+
+---
+
+## REGLA DE NEGOCIO CENTRAL — NUNCA IGNORAR
+
+Tarifa Tercero = Tarifa Cliente × (1 - % Rentabilidad / 100)
+
+Con descuento habilitado en la operación:
+  valor_real_cliente = tarifa_cliente - descuento_valor
+  rentabilidad       = tarifa_cliente × (% / 100)   ← siempre sobre tarifa original
+  tarifa_tercero     = valor_real_cliente - rentabilidad
+
+---
+
+## VISIBILIDAD DE TARIFAS — RESTRICCIÓN DE SEGURIDAD NO NEGOCIABLE
+
+| Campo             | COINTRA | CLIENTE | TERCERO |
+|-------------------|---------|---------|---------|
+| tarifa_cliente    |   ✅    |   ✅    |   ❌   |
+| tarifa_tercero    |   ✅    |   ❌    |   ✅   |
+| rentabilidad      |   ✅    |   ❌    |   ❌   |
+
+Esta restricción aplica en: responses de API, serialización, exportaciones Excel/PDF y correos.
+NUNCA exponer rentabilidad ni tarifa_tercero en respuestas dirigidas al cliente.
+NUNCA exponer tarifa_cliente ni rentabilidad en respuestas dirigidas al tercero.
+
+---
+
+## TIPOS DE CONCILIACIÓN
+
+1. VIAJES      → asociada a una operación, con manifiesto Avansat por viaje
+2. PEAJES      → independiente, sin manifiesto ni tercero por ítem
+3. ADICIONALES → servicios extra (horas extras, estibadas, conductor relevo, etc.)
+
+---
+
+## ESTADOS
+
+Conciliación: BORRADOR → EN_REVISION → APROBADA → CERRADA
+Ítem:         PENDIENTE → EN_REVISION → APROBADO | RECHAZADO
+
+---
+
+## CORREOS
+
+- Son siempre manuales (botón en la UI). Nunca automáticos.
+- El destinatario siempre es editable por el usuario.
+- Contenido: texto plano simple. No requiere diseño elaborado.
+- Excepción: correo interno de Cointra al equipo de facturación incluye Excel adjunto.
+- Implementación: smtplib con SMTP Microsoft/Claro.
+
+---
+
+## API AVANSAT
+
+URL:    https://avansat5.intrared.net:8083/ap/interf/app/APIAvansat/v1/index.php
+Método: GET
+Header: Authorization: 3d524a53c110e4c22463b10ed32cef9d
+Params: aplicacion=sate_cointr | type=operacionnacional | user=InterfApiOperaCoin | pass=ZxDYT1QkxdId8
+Filtros: &manifiesto=NUM | &fechacreadoinicial=YYYY-MM-DD | &fechacreadofinal=YYYY-MM-DD
+Código éxito: 1000
+
+---
+
+## REGLAS MÓDULO VIAJES
+- Campo "titulo" es OBLIGATORIO en todo viaje (ej: "Urbano Cota", "Traslado Montevideo")
+- Campo "conductor" es OPCIONAL
+- Viajes conciliados muestran el número/nombre de la conciliación a la que pertenecen
+- Al crear una conciliación, el sistema carga automáticamente TODOS los viajes
+  PENDIENTES de esa operación hasta la fecha de creación
+
+## CONVENCIONES DE CÓDIGO
+
+### Backend (Python/FastAPI)
+- snake_case para variables, funciones y nombres de tabla
+- Schemas Pydantic separados por operación (Create, Update, Response)
+- Lógica de negocio en /services/, nunca en los routers
+- Control de visibilidad en la capa de servicios antes de retornar datos
+- Variables de entorno en .env, nunca hardcodeadas
+- Migraciones siempre con Alembic
+
+### Frontend (React)
+- Componentes en PascalCase
+- Hooks personalizados en camelCase con prefijo "use"
+- Llamadas API centralizadas en /services/
+- Control de visibilidad con utils/permissions.js
+- Formateo de moneda con formatCOP() de utils/formatters.js
+- Estados con badges de color (ver CONTEXT_FRONTEND.md)
+- TailwindCSS para todos los estilos, sin CSS externo
+
+### Base de datos
+- IDs como int autoincrement
+- Timestamps: created_at, updated_at en datetime
+- Campos opcionales según tipo de ítem: nullable en lugar de tablas separadas
+- Índices en FKs y campos de búsqueda frecuente
+
+---
+
+## LO QUE ESTE SISTEMA NO HACE
+
+- No genera facturas electrónicas (solo autoriza para facturar)
+- No integra con sistemas de facturación (solo con API Avansat)
+- No envía correos automáticos (siempre manual)
+- No tiene periodicidad fija de conciliación (el período es libre)
+- Solo COINTRA crea conciliaciones. El tercero NO puede crear conciliaciones.
+- El catálogo de tarifas es solo consulta visual, sin relación en base de datos.

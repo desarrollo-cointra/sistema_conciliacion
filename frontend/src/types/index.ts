@@ -60,11 +60,13 @@ export interface Viaje {
   id: number;
   operacion_id: number;
   tercero_id: number;
+  conciliacion_id?: number | null;
+  titulo: string;
   fecha_servicio: string;
   origen: string;
   destino: string;
   placa: string;
-  conductor: string;
+  conductor: string | null;
   tarifa_tercero: number | null;
   tarifa_cliente: number | null;
   rentabilidad: number | null;

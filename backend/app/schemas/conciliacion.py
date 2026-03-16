@@ -50,13 +50,21 @@ class ConciliacionItemCreate(BaseModel):
     conductor: str | None = None
     tarifa_tercero: float | None = None
     tarifa_cliente: float | None = None
-    manifiesto_avansat_id: str | None = None
     manifiesto_numero: str | None = None
+    remesa: str | None = None
     descripcion: str | None = None
 
 
 class ConciliacionItemUpdateEstado(BaseModel):
     estado: ItemEstado
+
+
+class ConciliacionItemPatch(BaseModel):
+    manifiesto_numero: str | None = None
+    remesa: str | None = None
+    tarifa_tercero: float | None = None
+    tarifa_cliente: float | None = None
+    rentabilidad: float | None = None
 
 
 class ClienteItemDecision(BaseModel):
@@ -77,8 +85,8 @@ class ConciliacionItemOut(ORMModel):
     tarifa_tercero: float | None
     tarifa_cliente: float | None
     rentabilidad: float | None
-    manifiesto_avansat_id: str | None
     manifiesto_numero: str | None
+    remesa: str | None
     cargado_por: str
     descripcion: str | None
     created_by: int

@@ -22,7 +22,6 @@ class Viaje(Base):
     tarifa_tercero: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     tarifa_cliente: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     rentabilidad: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
-    manifiesto_avansat_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     manifiesto_numero: Mapped[str | None] = mapped_column(String(100), nullable=True)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     cargado_por: Mapped[str] = mapped_column(String(20), nullable=False)

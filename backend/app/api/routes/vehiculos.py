@@ -106,16 +106,26 @@ def create_vehiculo(
     if user.rol not in [UserRole.COINTRA, UserRole.TERCERO]:
         raise HTTPException(status_code=403, detail="No tiene permisos para crear vehiculos")
 
-    existing = db.query(Vehiculo).filter(Vehiculo.placa == payload.placa).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Ya existe un vehiculo con esa placa")
-
     tipo = db.get(TipoVehiculo, payload.tipo_vehiculo_id)
     if not tipo or not tipo.activo:
         raise HTTPException(status_code=400, detail="Tipo de vehiculo invalido")
 
+    placa_up = payload.placa.upper()
+    existing = db.query(Vehiculo).filter(Vehiculo.placa == placa_up).first()
+    if existing:
+        if existing.activo:
+            raise HTTPException(status_code=400, detail="Ya existe un vehiculo con esa placa")
+        # Reactivar vehiculo previamente eliminado
+        existing.activo = True
+        existing.tipo_vehiculo_id = payload.tipo_vehiculo_id
+        existing.propietario = payload.propietario
+        existing.created_by = user.id
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     vehiculo = Vehiculo(
-        placa=payload.placa.upper(),
+        placa=placa_up,
         tipo_vehiculo_id=payload.tipo_vehiculo_id,
         propietario=payload.propietario,
         activo=True,

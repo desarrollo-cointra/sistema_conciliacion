@@ -1,9 +1,23 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../services/api";
-import type { CointraSubRol, TipoVehiculo, User, Vehiculo } from "../types";
+import type { TipoVehiculo, User, Vehiculo } from "../types";
 
 interface Props {
   user: User;
+}
+
+function toSpanishError(error: unknown): string {
+  const message = (error as Error)?.message || "";
+  if (!message) return "Ocurrio un error inesperado";
+
+  try {
+    const parsed = JSON.parse(message) as { detail?: string };
+    if (parsed.detail) return parsed.detail;
+  } catch {
+    // No-op: si no es JSON, usamos el mensaje plano
+  }
+
+  return message;
 }
 
 export function VehiculosPage({ user }: Props) {
@@ -11,8 +25,14 @@ export function VehiculosPage({ user }: Props) {
   const [tipos, setTipos] = useState<TipoVehiculo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [vehiculoForm, setVehiculoForm] = useState({
+    placa: "",
+    tipo_vehiculo_id: "",
+    propietario: "",
+  });
+  const [tipoNombre, setTipoNombre] = useState("");
 
-  const isCointraAdmin = user.rol === "COINTRA" && (user.sub_rol as CointraSubRol | null) === "COINTRA_ADMIN";
+  const isCointraAdmin = user.rol === "COINTRA" && user.sub_rol === "COINTRA_ADMIN";
 
   async function loadData() {
     setLoading(true);
@@ -22,7 +42,7 @@ export function VehiculosPage({ user }: Props) {
       setVehiculos(vs);
       setTipos(ts);
     } catch (e) {
-      setError((e as Error).message);
+      setError(toSpanishError(e));
     } finally {
       setLoading(false);
     }
@@ -34,14 +54,37 @@ export function VehiculosPage({ user }: Props) {
 
   async function handleCreateVehiculo(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    const placa = String(form.get("placa") || "").toUpperCase();
-    const tipo_vehiculo_id = Number(form.get("tipo_vehiculo_id"));
-    const propietario = String(form.get("propietario") || "") || undefined;
+    setError("");
+    const placa = vehiculoForm.placa.trim().toUpperCase();
+    const tipo_vehiculo_id = Number(vehiculoForm.tipo_vehiculo_id);
+    const propietario = vehiculoForm.propietario.trim() || undefined;
 
-    await api.crearVehiculo({ placa, tipo_vehiculo_id, propietario });
-    e.currentTarget.reset();
-    await loadData();
+    if (!placa || !tipo_vehiculo_id) {
+      setError("Debes diligenciar placa y tipo de vehiculo");
+      return;
+    }
+
+    try {
+      await api.crearVehiculo({ placa, tipo_vehiculo_id, propietario });
+      setVehiculoForm({ placa: "", tipo_vehiculo_id: "", propietario: "" });
+      await loadData();
+    } catch (err) {
+      setError(toSpanishError(err));
+    }
+  }
+
+  async function handleCreateTipo(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError("");
+    const nombre = tipoNombre.trim();
+    if (!nombre) return;
+    try {
+      await api.crearTipoVehiculo({ nombre });
+      setTipoNombre("");
+      await loadData();
+    } catch (err) {
+      setError(toSpanishError(err));
+    }
   }
 
   async function handleDeleteVehiculo(id: number) {
@@ -75,6 +118,8 @@ export function VehiculosPage({ user }: Props) {
             <input
               name="placa"
               required
+              value={vehiculoForm.placa}
+              onChange={(e) => setVehiculoForm((prev) => ({ ...prev, placa: e.target.value }))}
               placeholder="ABC123"
               className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
             />
@@ -86,6 +131,10 @@ export function VehiculosPage({ user }: Props) {
             <select
               name="tipo_vehiculo_id"
               required
+              value={vehiculoForm.tipo_vehiculo_id}
+              onChange={(e) =>
+                setVehiculoForm((prev) => ({ ...prev, tipo_vehiculo_id: e.target.value }))
+              }
               className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
             >
               <option value="">Seleccione...</option>
@@ -102,6 +151,10 @@ export function VehiculosPage({ user }: Props) {
             </label>
             <input
               name="propietario"
+              value={vehiculoForm.propietario}
+              onChange={(e) =>
+                setVehiculoForm((prev) => ({ ...prev, propietario: e.target.value }))
+              }
               placeholder="Nombre del propietario"
               className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
             />
@@ -166,6 +219,62 @@ export function VehiculosPage({ user }: Props) {
           </div>
         )}
       </section>
+      {isCointraAdmin && (
+        <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+          <h3 className="mb-3 text-sm font-semibold text-slate-900">Tipos de vehículo</h3>
+          <p className="mb-4 text-xs text-neutral">
+            Solo visible para Cointra Admin. Gestiona los tipos disponibles al registrar vehículos.
+          </p>
+          <form
+            onSubmit={(e) => void handleCreateTipo(e)}
+            className="mb-4 flex items-end gap-3"
+          >
+            <div className="flex-1">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
+                Nombre del tipo
+              </label>
+              <input
+                name="nombre"
+                required
+                value={tipoNombre}
+                onChange={(e) => setTipoNombre(e.target.value)}
+                placeholder="Ej. Tractomula"
+                className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+              />
+            </div>
+            <button
+              type="submit"
+              className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary/90"
+            >
+              Agregar tipo
+            </button>
+          </form>
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                  <th className="border-b border-border px-3 py-2 text-left">ID</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Nombre</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tipos.map((t) => (
+                  <tr key={t.id} className="border-b border-border last:border-0">
+                    <td className="px-3 py-2">{t.id}</td>
+                    <td className="px-3 py-2">{t.nombre}</td>
+                    <td className="px-3 py-2">
+                      <span className="inline-flex rounded-full bg-success/10 px-2.5 py-0.5 text-xs font-semibold text-success">
+                        ACTIVO
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

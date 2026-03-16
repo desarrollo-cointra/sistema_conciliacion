@@ -77,7 +77,6 @@ export const api = {
     conductor?: string;
     tarifa_tercero: number;
     tarifa_cliente?: number;
-    manifiesto_avansat_id?: string;
     manifiesto_numero?: string;
     descripcion?: string;
   }) =>
@@ -98,9 +97,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  patchConciliacionItem: (
+    itemId: number,
+    payload: {
+      manifiesto_numero?: string | null;
+      remesa?: string | null;
+      tarifa_tercero?: number | null;
+      tarifa_cliente?: number | null;
+      rentabilidad?: number | null;
+    }
+  ) =>
+    request<Item>(`/conciliaciones/items/${itemId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   eliminarVehiculo: (id: number) =>
     request<{ ok: boolean }>(`/vehiculos/${id}`, {
       method: "DELETE",
     }),
   tiposVehiculo: () => request<TipoVehiculo[]>("/vehiculos/tipos-vehiculo"),
+  crearTipoVehiculo: (payload: { nombre: string }) =>
+    request<TipoVehiculo>("/vehiculos/tipos-vehiculo", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

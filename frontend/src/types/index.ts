@@ -51,8 +51,8 @@ export interface Item {
   tarifa_tercero: number | null;
   tarifa_cliente: number | null;
   rentabilidad: number | null;
-  manifiesto_avansat_id: string | null;
   manifiesto_numero: string | null;
+  remesa: string | null;
   cargado_por: string;
   descripcion: string | null;
   created_by: number;
@@ -73,7 +73,6 @@ export interface Viaje {
   tarifa_tercero: number | null;
   tarifa_cliente: number | null;
   rentabilidad: number | null;
-  manifiesto_avansat_id: string | null;
   manifiesto_numero: string | null;
   descripcion: string | null;
   cargado_por: string;

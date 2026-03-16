@@ -58,7 +58,6 @@ def create_viaje(
         conductor=payload.conductor,
         tarifa_tercero=payload.tarifa_tercero,
         tarifa_cliente=payload.tarifa_cliente,
-        manifiesto_avansat_id=payload.manifiesto_avansat_id,
         manifiesto_numero=payload.manifiesto_numero,
         descripcion=payload.descripcion,
         created_by=user.id,

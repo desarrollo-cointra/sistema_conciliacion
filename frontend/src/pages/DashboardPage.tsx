@@ -1,6 +1,74 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../services/api";
 import { Conciliacion, Item, Operacion, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { formatCOP } from "../utils/formatters";
+
+interface EditableCellProps {
+  initialValue: string;
+  onSave: (value: string) => Promise<void>;
+  placeholder?: string;
+  type?: "text" | "number";
+  className?: string;
+  helperText?: string;
+}
+
+function EditableCell({ initialValue, onSave, placeholder, type = "text", className, helperText }: EditableCellProps) {
+  const [value, setValue] = useState(initialValue);
+  const [tabDirection, setTabDirection] = useState<-1 | 0 | 1>(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  function focusSibling(direction: -1 | 1) {
+    if (!inputRef.current) return;
+    const focusables = Array.from(
+      document.querySelectorAll<HTMLInputElement>("input[data-editable-cell='true']")
+    ).filter((el) => !el.disabled && el.offsetParent !== null);
+    const currentIndex = focusables.indexOf(inputRef.current);
+    if (currentIndex === -1) return;
+    const next = focusables[currentIndex + direction];
+    if (next) next.focus();
+  }
+
+  return (
+    <div className="space-y-1">
+      <input
+        ref={inputRef}
+        data-editable-cell="true"
+        type={type}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.currentTarget.blur();
+            return;
+          }
+          if (e.key === "Tab") {
+            e.preventDefault();
+            setTabDirection(e.shiftKey ? -1 : 1);
+            e.currentTarget.blur();
+          }
+        }}
+        onBlur={async () => {
+          if (value !== initialValue) {
+            await onSave(value);
+          }
+          if (tabDirection !== 0) {
+            const dir = tabDirection;
+            setTabDirection(0);
+            requestAnimationFrame(() => focusSibling(dir));
+          }
+        }}
+        placeholder={placeholder}
+        className={className}
+      />
+      {helperText && <p className="text-[11px] text-neutral">{helperText}</p>}
+    </div>
+  );
+}
 
 interface Props {
   user: User;
@@ -8,8 +76,6 @@ interface Props {
   conciliaciones: Conciliacion[];
   onRefreshConciliaciones: () => Promise<void>;
 }
-
-const money = new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP" });
 
 export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConciliaciones }: Props) {
   const [activeModule, setActiveModule] = useState<"viajes" | "conciliaciones">("viajes");
@@ -101,7 +167,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       tarifa_tercero: Number(formData.get("tarifa_tercero") || 0),
       tarifa_cliente: Number(formData.get("tarifa_cliente") || 0),
       descripcion: String(formData.get("descripcion") || ""),
-      manifiesto_numero: String(formData.get("manifiesto_numero") || ""),
     };
 
     await api.crearViaje(payload);
@@ -130,6 +195,20 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
     };
     await api.crearItem(payload);
     await loadItems(selected.id);
+  }
+
+  async function patchItemAndSync(
+    itemId: number,
+    payload: {
+      manifiesto_numero?: string | null;
+      remesa?: string | null;
+      tarifa_tercero?: number | null;
+      tarifa_cliente?: number | null;
+      rentabilidad?: number | null;
+    }
+  ) {
+    const updated = await api.patchConciliacionItem(itemId, payload);
+    setItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
   }
 
   useEffect(() => {
@@ -221,17 +300,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                       className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
                     />
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
-                      Manifiesto
-                    </label>
-                    <input
-                      name="manifiesto_numero"
-                      placeholder="AV-12345"
-                      className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
-                    />
-                  </div>
-
                   <div>
                     <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">
                       Origen
@@ -382,12 +450,12 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                         </td>
                         {user.rol !== "CLIENTE" && (
                           <td className="px-3 py-2">
-                            {v.tarifa_tercero ? money.format(v.tarifa_tercero) : "-"}
+                            {formatCOP(v.tarifa_tercero)}
                           </td>
                         )}
                         {user.rol !== "TERCERO" && (
                           <td className="px-3 py-2">
-                            {v.tarifa_cliente ? money.format(v.tarifa_cliente) : "-"}
+                            {formatCOP(v.tarifa_cliente)}
                           </td>
                         )}
                       </tr>
@@ -677,6 +745,11 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
           ) : (
             <>
               {error && <p className="text-sm font-medium text-danger">{error}</p>}
+              {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
+                <p className="text-xs text-neutral">
+                  Puedes editar manualmente manifiesto y remesa para los items de tipo VIAJE.
+                </p>
+              )}
               <div className="overflow-x-auto">
                 <table className="min-w-full border-collapse text-sm">
                   <thead>
@@ -687,6 +760,12 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                       <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
                       <th className="border-b border-border px-3 py-2 text-left">Origen</th>
                       <th className="border-b border-border px-3 py-2 text-left">Destino</th>
+                      {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
+                        <>
+                          <th className="border-b border-border px-3 py-2 text-left">Manifiesto</th>
+                          <th className="border-b border-border px-3 py-2 text-left">Remesa</th>
+                        </>
+                      )}
                       {user.rol !== "CLIENTE" && (
                         <th className="border-b border-border px-3 py-2 text-left">Tarifa Tercero</th>
                       )}
@@ -711,18 +790,100 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                         <td className="px-3 py-2">{item.fecha_servicio}</td>
                         <td className="px-3 py-2">{item.origen || "-"}</td>
                         <td className="px-3 py-2">{item.destino || "-"}</td>
+                        {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
+                          <>
+                            <td className="px-3 py-2">
+                              {item.tipo === "VIAJE" ? (
+                                <EditableCell
+                                  initialValue={item.manifiesto_numero ?? ""}
+                                  onSave={async (val) => {
+                                    await patchItemAndSync(item.id, { manifiesto_numero: val });
+                                  }}
+                                  placeholder="MNF-..."
+                                  className="w-32 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                                />
+                              ) : (
+                                "-"
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              {item.tipo === "VIAJE" ? (
+                                <EditableCell
+                                  initialValue={item.remesa ?? ""}
+                                  onSave={async (val) => {
+                                    await patchItemAndSync(item.id, { remesa: val });
+                                  }}
+                                  placeholder="RMS-..."
+                                  className="w-32 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                                />
+                              ) : (
+                                "-"
+                              )}
+                            </td>
+                          </>
+                        )}
                         {user.rol !== "CLIENTE" && (
                           <td className="px-3 py-2">
-                            {item.tarifa_tercero ? money.format(item.tarifa_tercero) : "-"}
+                            {user.rol === "COINTRA" && selected.estado === "BORRADOR" ? (
+                              <EditableCell
+                                initialValue={String(item.tarifa_tercero ?? "")}
+                                type="number"
+                                onSave={async (val) => {
+                                  await patchItemAndSync(item.id, { tarifa_tercero: Number(val) });
+                                }}
+                                placeholder="0"
+                                helperText={
+                                  item.tarifa_tercero !== null && item.tarifa_tercero !== undefined
+                                    ? `Actual: ${formatCOP(item.tarifa_tercero)}`
+                                    : "Actual: -"
+                                }
+                                className="w-28 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                              />
+                            ) : (
+                              formatCOP(item.tarifa_tercero)
+                            )}
                           </td>
                         )}
                         {user.rol !== "TERCERO" && (
                           <td className="px-3 py-2">
-                            {item.tarifa_cliente ? money.format(item.tarifa_cliente) : "-"}
+                            {user.rol === "COINTRA" && selected.estado === "BORRADOR" ? (
+                              <EditableCell
+                                initialValue={String(item.tarifa_cliente ?? "")}
+                                type="number"
+                                onSave={async (val) => {
+                                  await patchItemAndSync(item.id, { tarifa_cliente: Number(val) });
+                                }}
+                                placeholder="0"
+                                helperText={
+                                  item.tarifa_cliente !== null && item.tarifa_cliente !== undefined
+                                    ? `Actual: ${formatCOP(item.tarifa_cliente)}`
+                                    : "Actual: -"
+                                }
+                                className="w-28 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                              />
+                            ) : (
+                              formatCOP(item.tarifa_cliente)
+                            )}
                           </td>
                         )}
                         {user.rol === "COINTRA" && (
-                          <td className="px-3 py-2">{item.rentabilidad ?? "-"}</td>
+                          <td className="px-3 py-2">
+                            {selected.estado === "BORRADOR" ? (
+                              <EditableCell
+                                initialValue={String(item.rentabilidad ?? "")}
+                                type="number"
+                                onSave={async (val) => {
+                                  await patchItemAndSync(item.id, { rentabilidad: Number(val) });
+                                }}
+                                placeholder="%"
+                                className="w-20 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
+                              />
+                            ) : (
+                              item.rentabilidad !== null && item.rentabilidad !== undefined
+                                ? `${formatCOP(item.rentabilidad)} %`
+                                : "-"
+                            )}
+                          </td>
                         )}
                       </tr>
                     ))}
@@ -731,10 +892,10 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               </div>
               <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-slate-900">
                 {user.rol !== "CLIENTE" && (
-                  <span>Total Tercero: {money.format(totals.tarifaTercero)}</span>
+                  <span>Total Tercero: {formatCOP(totals.tarifaTercero)}</span>
                 )}
                 {user.rol !== "TERCERO" && (
-                  <span>Total Cliente: {money.format(totals.tarifaCliente)}</span>
+                  <span>Total Cliente: {formatCOP(totals.tarifaCliente)}</span>
                 )}
               </div>
             </>

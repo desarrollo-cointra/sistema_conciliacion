@@ -15,7 +15,6 @@ class ViajeCreate(BaseModel):
     conductor: str | None = None
     tarifa_tercero: float
     tarifa_cliente: float | None = None
-    manifiesto_avansat_id: str | None = None
     manifiesto_numero: str | None = None
     descripcion: str | None = None
 
@@ -34,7 +33,6 @@ class ViajeOut(ORMModel):
     tarifa_tercero: float | None
     tarifa_cliente: float | None
     rentabilidad: float | None
-    manifiesto_avansat_id: str | None
     manifiesto_numero: str | None
     descripcion: str | None
     cargado_por: str

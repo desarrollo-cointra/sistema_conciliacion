@@ -19,6 +19,7 @@ from app.schemas.conciliacion import (
     ConciliacionCreate,
     ConciliacionItemCreate,
     ConciliacionItemOut,
+    ConciliacionItemPatch,
     ConciliacionItemUpdateEstado,
     ConciliacionOut,
     ConciliacionWorkflowAction,
@@ -103,8 +104,8 @@ def create_conciliacion(
             tarifa_tercero=viaje.tarifa_tercero,
             tarifa_cliente=viaje.tarifa_cliente,
             rentabilidad=viaje.rentabilidad,
-            manifiesto_avansat_id=viaje.manifiesto_avansat_id,
             manifiesto_numero=viaje.manifiesto_numero,
+            remesa=None,
             descripcion=viaje.descripcion,
             created_by=user.id,
             cargado_por=viaje.cargado_por,
@@ -247,8 +248,8 @@ def create_item(
         conductor=payload.conductor,
         tarifa_tercero=payload.tarifa_tercero,
         tarifa_cliente=payload.tarifa_cliente,
-        manifiesto_avansat_id=payload.manifiesto_avansat_id,
         manifiesto_numero=payload.manifiesto_numero,
+        remesa=payload.remesa,
         descripcion=payload.descripcion,
         created_by=user.id,
         cargado_por=user.rol.value,
@@ -333,6 +334,79 @@ def update_item_estado(
         campo="estado_item",
         valor_anterior=old_estado,
         valor_nuevo=payload.estado,
+    )
+
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/items/{item_id}", response_model=ConciliacionItemOut)
+def patch_item(
+    item_id: int,
+    payload: ConciliacionItemPatch,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede actualizar items")
+
+    item = db.get(ConciliacionItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+
+    conc = db.get(Conciliacion, item.conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo se puede editar en BORRADOR")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    changed = payload.model_fields_set
+
+    old_manifiesto = item.manifiesto_numero
+    old_remesa = item.remesa
+    old_tarifa_tercero = item.tarifa_tercero
+    old_tarifa_cliente = item.tarifa_cliente
+    old_rentabilidad = item.rentabilidad
+
+    if "manifiesto_numero" in changed:
+        item.manifiesto_numero = payload.manifiesto_numero
+    if "remesa" in changed:
+        item.remesa = payload.remesa
+
+    pct = float(operacion.porcentaje_rentabilidad)
+    # Usar rentabilidad actual del ítem; solo como fallback la de la operación
+    pct = float(item.rentabilidad) if item.rentabilidad is not None else float(operacion.porcentaje_rentabilidad)
+
+    tarifa_fields = changed & {"tarifa_tercero", "tarifa_cliente", "rentabilidad"}
+    if tarifa_fields:
+        if "tarifa_tercero" in changed and "tarifa_cliente" not in changed and "rentabilidad" not in changed:
+            # Modificó tarifa_tercero → recalcular tarifa_cliente; rentabilidad no cambia
+            item.tarifa_tercero = payload.tarifa_tercero
+            if pct < 100:
+                item.tarifa_cliente = payload.tarifa_tercero / (1 - pct / 100)
+        elif "tarifa_cliente" in changed and "tarifa_tercero" not in changed and "rentabilidad" not in changed:
+            # Modificó tarifa_cliente → recalcular tarifa_tercero; rentabilidad no cambia
+            item.tarifa_cliente = payload.tarifa_cliente
+            item.tarifa_tercero = payload.tarifa_cliente * (1 - pct / 100)
+        elif "rentabilidad" in changed:
+            # Modificó % rentabilidad → guardar nuevo %, recalcular tarifa_tercero; tarifa_cliente no cambia
+            new_pct = payload.rentabilidad if payload.rentabilidad is not None else pct
+            item.rentabilidad = new_pct
+            if item.tarifa_cliente is not None and new_pct < 100:
+                item.tarifa_tercero = float(item.tarifa_cliente) * (1 - new_pct / 100)
+
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conc.id,
+        item_id=item.id,
+        campo="actualizacion_manual_item",
+        valor_anterior=f"manifiesto={old_manifiesto}; remesa={old_remesa}; t3={old_tarifa_tercero}; tc={old_tarifa_cliente}; rent={old_rentabilidad}",
+        valor_nuevo=f"manifiesto={item.manifiesto_numero}; remesa={item.remesa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}; rent={item.rentabilidad}",
     )
 
     db.commit()
@@ -631,8 +705,8 @@ def attach_pending_viajes(
             tarifa_tercero=viaje.tarifa_tercero,
             tarifa_cliente=viaje.tarifa_cliente,
             rentabilidad=viaje.rentabilidad,
-            manifiesto_avansat_id=viaje.manifiesto_avansat_id,
             manifiesto_numero=viaje.manifiesto_numero,
+            remesa=None,
             descripcion=viaje.descripcion,
             created_by=user.id,
             cargado_por=viaje.cargado_por,

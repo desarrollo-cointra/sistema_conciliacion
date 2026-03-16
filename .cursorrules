@@ -157,7 +157,7 @@ Código éxito: 1000
 ## LO QUE ESTE SISTEMA NO HACE
 
 - No genera facturas electrónicas (solo autoriza para facturar)
-- No integra con sistemas de facturación (solo con API Avansat)
+- No consume la API de Avansat en esta fase. El manifiesto y la remesa se ingresan manualmente por Cointra al revisar los viajes dentro de una conciliación.
 - No envía correos automáticos (siempre manual)
 - No tiene periodicidad fija de conciliación (el período es libre)
 - Solo COINTRA crea conciliaciones. El tercero NO puede crear conciliaciones.

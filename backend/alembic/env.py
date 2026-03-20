@@ -7,6 +7,7 @@ from alembic import context
 
 from app.db.base import Base
 from app.db.session import resolved_database_url
+from app.models import *  # noqa: F403
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

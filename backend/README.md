@@ -12,6 +12,14 @@ copy .env.example .env
 ```
 
 ## Ejecutar
+Antes del primer arranque (o despues de borrar la base de datos), aplica migraciones:
+
+```powershell
+alembic upgrade head
+```
+
+Luego inicia la API:
+
 ```powershell
 uvicorn app.main:app --reload
 ```

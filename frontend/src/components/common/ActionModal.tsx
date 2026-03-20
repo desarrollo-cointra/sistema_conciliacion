@@ -47,9 +47,6 @@ export function ActionModal({
   return createPortal(
     <div
       className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-900/30 p-4 backdrop-blur-sm"
-      onClick={() => {
-        if (!submitting) onClose();
-      }}
     >
       <div
         className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 shadow-2xl"

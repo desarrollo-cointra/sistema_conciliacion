@@ -1,1 +1,6 @@
 Generic single-database configuration.
+
+Notas del proyecto:
+- Las migraciones activas de Alembic estan en este directorio: `backend/alembic/versions`.
+- La carpeta `backend/alembic/versions/legacy_restored` conserva migraciones historicas recuperadas para trazabilidad en git.
+- Esas migraciones historicas NO deben volver al nivel raiz de `versions`, porque generan multiples heads y pueden romper `alembic upgrade head`.

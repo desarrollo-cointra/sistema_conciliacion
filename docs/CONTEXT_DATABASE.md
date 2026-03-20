@@ -83,7 +83,7 @@ Ref: conciliaciones.operacion_id > operaciones.id
 Ref: conciliaciones.created_by > usuarios.id
 Ref: conciliaciones.aprobado_por > usuarios.id
 
--- tipo: VIAJE | PEAJE | HORA_EXTRA | VIAJE_EXTRA | ESTIBADA | CONDUCTOR_RELEVO | OTRO
+-- tipo: VIAJE | PEAJE | HORA_EXTRA | VIAJE_ADICIONAL | ESTIBADA | CONDUCTOR_RELEVO | OTRO
 -- estado: PENDIENTE | EN_REVISION | APROBADO | RECHAZADO
 -- tipo_vehiculo: DOBLE_TROQUE | TRACTOMULA | OTRO (solo para viajes con descuento)
 -- cargado_por: TERCERO | COINTRA

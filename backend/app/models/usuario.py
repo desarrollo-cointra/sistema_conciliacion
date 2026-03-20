@@ -3,6 +3,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.models.enums import CointraSubRol, UserRole
+from app.models.usuario_operacion import usuario_operaciones_asignadas
 
 
 class Usuario(Base):
@@ -23,3 +24,8 @@ class Usuario(Base):
     conciliaciones_creadas = relationship("Conciliacion", back_populates="creador")
     items_creados = relationship("ConciliacionItem", back_populates="creador")
     comentarios = relationship("Comentario", back_populates="usuario")
+    operaciones_asignadas = relationship(
+        "Operacion",
+        secondary=usuario_operaciones_asignadas,
+        back_populates="usuarios_cliente_asignados",
+    )

@@ -7,6 +7,7 @@ from app.models.conciliacion import Conciliacion
 from app.models.historial_cambio import HistorialCambio
 from app.models.notificacion import Notificacion
 from app.models.operacion import Operacion
+from app.models.usuario_operacion import usuario_operaciones_asignadas
 from app.models.enums import UserRole
 from app.models.usuario import Usuario
 from app.schemas.notificacion import (
@@ -147,7 +148,14 @@ def destinatarios_sugeridos(
         # Cointra/tercero pueden sugerir cliente
         if user.rol not in [UserRole.COINTRA, UserRole.TERCERO]:
             raise HTTPException(status_code=403, detail="No autorizado")
-        query = query.filter(Usuario.rol == UserRole.CLIENTE, Usuario.cliente_id == op.cliente_id)
+        query = query.join(
+            usuario_operaciones_asignadas,
+            usuario_operaciones_asignadas.c.usuario_id == Usuario.id,
+        ).filter(
+            Usuario.rol == UserRole.CLIENTE,
+            Usuario.cliente_id == op.cliente_id,
+            usuario_operaciones_asignadas.c.operacion_id == op.id,
+        )
     elif tipo == "respuesta_cliente":
         # Cliente responde preferiblemente al mismo usuario que envio la conciliacion a revision
         if user.rol != UserRole.CLIENTE:

@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.enums import ConciliacionEstado, ItemEstado, ItemTipo
 from app.schemas.common import ORMModel
@@ -46,6 +47,7 @@ class ConciliacionOut(ORMModel):
     fecha_fin: date
     estado: ConciliacionEstado
     activo: bool
+    borrador_guardado: bool = False
     enviada_facturacion: bool = False
     created_by: int
     created_at: datetime
@@ -76,6 +78,7 @@ class ConciliacionItemUpdateEstado(BaseModel):
 
 
 class ConciliacionItemPatch(BaseModel):
+    placa: str | None = None
     manifiesto_numero: str | None = None
     remesa: str | None = None
     tarifa_tercero: float | None = None
@@ -106,6 +109,49 @@ class ConciliacionItemOut(ORMModel):
     remesa: str | None
     cargado_por: str
     descripcion: str | None
+    servicio_nombre: str | None = None
+    servicio_codigo: str | None = None
+    horas_cantidad: float | None = None
+    liquidacion_contrato_fijo: bool = False
+    liquidacion_contrato_fijo_id: int | None = None
+    liquidacion_periodo_inicio: date | None = None
+    liquidacion_periodo_fin: date | None = None
+    liquidacion_es_relevo: bool = False
+    liquidacion_relevo_con_valor: bool | None = None
+    created_by: int
+    created_at: datetime
+
+
+class LiquidacionContratoFijoCreate(BaseModel):
+    liquidacion_id: int | None = Field(default=None, ge=1)
+    periodo_inicio: date
+    periodo_fin: date
+    placas: list[str] = Field(min_length=1)
+    valor_tercero: float = Field(gt=0)
+    incluir_conductor_relevo: bool = False
+    relevo_con_valor: bool = False
+    valor_tercero_relevo: float | None = Field(default=None, ge=0)
+
+
+ConciliacionManifiestoContexto = Literal["CONCILIACION", "LIQUIDACION_CONTRATO_FIJO"]
+
+
+class ConciliacionManifiestoCreate(BaseModel):
+    manifiesto_numero: str
+    contexto: ConciliacionManifiestoContexto = "CONCILIACION"
+    liquidacion_contrato_fijo_id: int | None = Field(default=None, ge=1)
+
+
+class ConciliacionManifiestoUpdate(BaseModel):
+    manifiesto_numero: str
+
+
+class ConciliacionManifiestoOut(ORMModel):
+    id: int
+    conciliacion_id: int
+    manifiesto_numero: str
+    contexto: ConciliacionManifiestoContexto
+    liquidacion_contrato_fijo_id: int | None = None
     created_by: int
     created_at: datetime
 

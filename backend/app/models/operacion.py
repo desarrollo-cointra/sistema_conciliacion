@@ -2,6 +2,7 @@ from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.usuario_operacion import usuario_operaciones_asignadas
 
 
 class Operacion(Base):
@@ -17,3 +18,8 @@ class Operacion(Base):
     cliente = relationship("Cliente", back_populates="operaciones")
     tercero = relationship("Tercero", back_populates="operaciones")
     conciliaciones = relationship("Conciliacion", back_populates="operacion")
+    usuarios_cliente_asignados = relationship(
+        "Usuario",
+        secondary=usuario_operaciones_asignadas,
+        back_populates="operaciones_asignadas",
+    )

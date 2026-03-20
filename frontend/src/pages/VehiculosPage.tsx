@@ -40,6 +40,7 @@ export function VehiculosPage({ user }: Props) {
   >(null);
 
   const isCointraAdmin = user.rol === "COINTRA" && user.sub_rol === "COINTRA_ADMIN";
+  const tiposActivos = useMemo(() => tipos.filter((t) => t.activo), [tipos]);
   const tercerosDisponibles = useMemo(() => {
     if (user.rol === "TERCERO" && user.tercero_id) {
       return terceros.filter((t) => t.id === user.tercero_id);
@@ -164,7 +165,7 @@ export function VehiculosPage({ user }: Props) {
               className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
             >
               <option value="">Seleccione...</option>
-              {tipos.map((t) => (
+              {tiposActivos.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.nombre}
                 </option>
@@ -205,10 +206,9 @@ export function VehiculosPage({ user }: Props) {
 
       <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold text-slate-900">Vehículos registrados</h3>
+        {!!error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
         {loading ? (
           <p className="text-sm text-neutral">Cargando vehículos...</p>
-        ) : error ? (
-          <p className="text-sm font-medium text-danger">{error}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">

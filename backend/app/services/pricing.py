@@ -10,6 +10,13 @@ def calculate_tarifa_cliente(tarifa_tercero: float, operacion: Operacion) -> tup
     return float(tarifa_tercero) / divisor, pct
 
 
+def calculate_tarifa_tercero_from_cliente(tarifa_cliente: float, rentabilidad_pct: float) -> float:
+    factor = 1 - (float(rentabilidad_pct) / 100)
+    if factor <= 0:
+        return float(tarifa_cliente)
+    return float(tarifa_cliente) * factor
+
+
 def apply_rentabilidad(item: ConciliacionItem, operacion: Operacion) -> None:
     if item.tarifa_tercero is None:
         return

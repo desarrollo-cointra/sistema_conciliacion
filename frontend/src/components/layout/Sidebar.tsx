@@ -25,6 +25,8 @@ function getNavItemsForRole(user: User): NavItem[] {
     ];
 
     if (sub_rol === "COINTRA_ADMIN") {
+      items.push({ key: "servicios", label: "Servicios", path: "/servicios" });
+      items.push({ key: "catalogo-tarifas", label: "Catálogo de Tarifas", path: "/catalogo-tarifas" });
       items.push({ key: "usuarios", label: "Usuarios", path: "/usuarios" });
     }
 

@@ -13,6 +13,7 @@ class UserOut(ORMModel):
     cliente_id: int | None = None
     tercero_id: int | None = None
     activo: bool
+    operacion_ids: list[int] = []
 
 
 class UserCreate(BaseModel):
@@ -23,6 +24,7 @@ class UserCreate(BaseModel):
     sub_rol: CointraSubRol | None = None
     cliente_id: int | None = None
     tercero_id: int | None = None
+    operacion_ids: list[int] = []
 
 
 class UserUpdate(BaseModel):
@@ -32,3 +34,4 @@ class UserUpdate(BaseModel):
     sub_rol: CointraSubRol | None = None
     cliente_id: int | None = None
     tercero_id: int | None = None
+    operacion_ids: list[int] | None = None

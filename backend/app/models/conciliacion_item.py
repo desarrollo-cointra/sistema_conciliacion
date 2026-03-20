@@ -34,3 +34,23 @@ class ConciliacionItem(Base):
     viaje = relationship("Viaje")
     creador = relationship("Usuario", back_populates="items_creados")
     comentarios = relationship("Comentario", back_populates="item")
+
+    @property
+    def servicio_nombre(self) -> str | None:
+        if not self.viaje or not self.viaje.servicio:
+            return None
+        return self.viaje.servicio.nombre
+
+    @property
+    def servicio_codigo(self) -> str | None:
+        if not self.viaje or not self.viaje.servicio:
+            return None
+        return self.viaje.servicio.codigo
+
+    @property
+    def horas_cantidad(self) -> float | None:
+        if not self.viaje:
+            return None
+        if self.viaje.horas_cantidad is None:
+            return None
+        return float(self.viaje.horas_cantidad)

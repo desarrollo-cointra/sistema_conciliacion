@@ -17,6 +17,7 @@ class Conciliacion(Base):
     fecha_fin: Mapped[datetime] = mapped_column(Date, nullable=False)
     estado: Mapped[ConciliacionEstado] = mapped_column(Enum(ConciliacionEstado), default=ConciliacionEstado.BORRADOR)
     activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    borrador_guardado: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     enviada_facturacion: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("usuarios.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -26,3 +27,4 @@ class Conciliacion(Base):
     items = relationship("ConciliacionItem", back_populates="conciliacion", cascade="all, delete-orphan")
     comentarios = relationship("Comentario", back_populates="conciliacion", cascade="all, delete-orphan")
     viajes = relationship("Viaje", back_populates="conciliacion")
+    manifiestos = relationship("ConciliacionManifiesto", back_populates="conciliacion", cascade="all, delete-orphan")

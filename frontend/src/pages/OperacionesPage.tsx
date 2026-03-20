@@ -16,8 +16,19 @@ export function OperacionesPage({ user }: Props) {
   const [operaciones, setOperaciones] = useState<Operacion[]>([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [editModal, setEditModal] = useState<{ id: number; nombre: string; porcentaje: string } | null>(null);
+  const [createClienteId, setCreateClienteId] = useState("");
+  const [createClienteUsers, setCreateClienteUsers] = useState<User[]>([]);
+  const [editClienteUsers, setEditClienteUsers] = useState<User[]>([]);
+  const [editModal, setEditModal] = useState<{
+    id: number;
+    cliente_id: number;
+    nombre: string;
+    porcentaje: string;
+    cliente_usuario_ids: number[];
+  } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ id: number; action: "inactivar" | "reactivar" } | null>(null);
+  const clientesActivos = useMemo(() => clientes.filter((c) => c.activo), [clientes]);
+  const tercerosActivos = useMemo(() => terceros.filter((t) => t.activo), [terceros]);
 
   const clienteById = useMemo(() => new Map(clientes.map((c) => [c.id, c])), [clientes]);
   const terceroById = useMemo(() => new Map(terceros.map((t) => [t.id, t])), [terceros]);
@@ -60,6 +71,34 @@ export function OperacionesPage({ user }: Props) {
     }
   }
 
+  async function loadClienteUsers(clienteId: number, target: "create" | "edit") {
+    try {
+      const rows = await api.clienteUsuarios(clienteId);
+      if (target === "create") {
+        setCreateClienteUsers(rows);
+      } else {
+        setEditClienteUsers(rows);
+      }
+    } catch {
+      if (target === "create") {
+        setCreateClienteUsers([]);
+      } else {
+        setEditClienteUsers([]);
+      }
+    }
+  }
+
+  async function openEditOperacion(op: Operacion) {
+    setEditModal({
+      id: op.id,
+      cliente_id: op.cliente_id,
+      nombre: op.nombre,
+      porcentaje: String(op.porcentaje_rentabilidad),
+      cliente_usuario_ids: [...(op.cliente_usuario_ids ?? [])],
+    });
+    await loadClienteUsers(op.cliente_id, "edit");
+  }
+
   useEffect(() => {
     if (soloCointra) {
       void loadData();
@@ -78,8 +117,14 @@ export function OperacionesPage({ user }: Props) {
         tercero_id: Number(form.get("tercero_id")),
         nombre: String(form.get("nombre") || "").trim(),
         porcentaje_rentabilidad: Number(form.get("porcentaje_rentabilidad") || 10),
+        cliente_usuario_ids: form
+          .getAll("cliente_usuario_ids")
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0),
       });
       formEl.reset();
+      setCreateClienteId("");
+      setCreateClienteUsers([]);
       await loadData();
       setSuccess("Operación creada exitosamente.");
     } catch (err) {
@@ -96,10 +141,12 @@ export function OperacionesPage({ user }: Props) {
       await api.editarOperacion(editModal.id, {
         nombre: editModal.nombre.trim(),
         porcentaje_rentabilidad: Number(editModal.porcentaje),
+        cliente_usuario_ids: editModal.cliente_usuario_ids,
       });
       await loadData();
       setSuccess("Operación actualizada exitosamente.");
       setEditModal(null);
+      setEditClienteUsers([]);
     } catch (err) {
       setError((err as Error).message || "No se pudo actualizar la operación");
     }
@@ -161,10 +208,21 @@ export function OperacionesPage({ user }: Props) {
               <select
                 name="cliente_id"
                 required
+                value={createClienteId}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCreateClienteId(value);
+                  const clienteId = Number(value);
+                  if (clienteId > 0) {
+                    void loadClienteUsers(clienteId, "create");
+                  } else {
+                    setCreateClienteUsers([]);
+                  }
+                }}
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
               >
                 <option value="">Seleccione...</option>
-                {clientes.map((c) => (
+                {clientesActivos.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.nombre}
                   </option>
@@ -179,7 +237,7 @@ export function OperacionesPage({ user }: Props) {
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
               >
                 <option value="">Seleccione...</option>
-                {terceros.map((t) => (
+                {tercerosActivos.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.nombre}
                   </option>
@@ -206,6 +264,22 @@ export function OperacionesPage({ user }: Props) {
                 Crear operación
               </button>
             </div>
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">Usuarios cliente asignados</label>
+              <select
+                name="cliente_usuario_ids"
+                multiple
+                disabled={createClienteUsers.length === 0}
+                className="h-28 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:bg-slate-100"
+              >
+                {createClienteUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.nombre} ({u.email})</option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-neutral">
+                Si no seleccionas usuarios, se asignarán automáticamente todos los usuarios cliente activos de ese cliente.
+              </p>
+            </div>
           </form>
 
           <div className="overflow-x-auto">
@@ -216,6 +290,7 @@ export function OperacionesPage({ user }: Props) {
                   <th className="border-b border-border px-3 py-2 text-left">Nombre</th>
                   <th className="border-b border-border px-3 py-2 text-left">Cliente</th>
                   <th className="border-b border-border px-3 py-2 text-left">Tercero</th>
+                  <th className="border-b border-border px-3 py-2 text-left">Usuarios cliente</th>
                   <th className="border-b border-border px-3 py-2 text-left">Rentabilidad %</th>
                   <th className="border-b border-border px-3 py-2 text-left">Activa</th>
                   {soloCointraAdmin && <th className="border-b border-border px-3 py-2 text-left">Acciones</th>}
@@ -228,6 +303,7 @@ export function OperacionesPage({ user }: Props) {
                     <td className="px-3 py-2">{op.nombre}</td>
                     <td className="px-3 py-2">{clienteById.get(op.cliente_id)?.nombre ?? `Cliente #${op.cliente_id}`}</td>
                     <td className="px-3 py-2">{terceroById.get(op.tercero_id)?.nombre ?? `Tercero #${op.tercero_id}`}</td>
+                    <td className="px-3 py-2">{op.cliente_usuario_ids?.length ?? 0}</td>
                     <td className="px-3 py-2">{op.porcentaje_rentabilidad}%</td>
                     <td className="px-3 py-2">{op.activa ? "Sí" : "No"}</td>
                     {soloCointraAdmin && (
@@ -235,13 +311,7 @@ export function OperacionesPage({ user }: Props) {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() =>
-                              setEditModal({
-                                id: op.id,
-                                nombre: op.nombre,
-                                porcentaje: String(op.porcentaje_rentabilidad),
-                              })
-                            }
+                            onClick={() => void openEditOperacion(op)}
                             className="rounded-full border border-border bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                           >
                             Editar
@@ -327,6 +397,20 @@ export function OperacionesPage({ user }: Props) {
           placeholder="Rentabilidad %"
           className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
         />
+        <select
+          multiple
+          value={(editModal?.cliente_usuario_ids ?? []).map(String)}
+          onChange={(e) => {
+            const values = Array.from(e.target.selectedOptions).map((opt) => Number(opt.value));
+            setEditModal((prev) => (prev ? { ...prev, cliente_usuario_ids: values } : prev));
+          }}
+          disabled={!editModal || editClienteUsers.length === 0}
+          className="h-28 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:bg-slate-100"
+        >
+          {editClienteUsers.map((u) => (
+            <option key={u.id} value={u.id}>{u.nombre} ({u.email})</option>
+          ))}
+        </select>
       </ActionModal>
 
       <ActionModal

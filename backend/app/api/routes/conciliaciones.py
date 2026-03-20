@@ -1,6 +1,10 @@
+from datetime import date
 from io import BytesIO
+import json
+from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -10,11 +14,14 @@ from app.api.deps import get_current_user, is_cointra_admin
 from app.db.session import get_db
 from app.models.comentario import Comentario
 from app.models.conciliacion import Conciliacion
+from app.models.conciliacion_manifiesto import ConciliacionManifiesto
 from app.models.conciliacion_item import ConciliacionItem
 from app.models.enums import ItemEstado, ItemTipo, UserRole
 from app.models.historial_cambio import HistorialCambio
 from app.models.operacion import Operacion
 from app.models.usuario import Usuario
+from app.models.usuario_operacion import usuario_operaciones_asignadas
+from app.models.vehiculo import Vehiculo
 from app.models.viaje import Viaje
 from app.schemas.historial import HistorialCambioOut, ResumenFinancieroOut
 from app.schemas.conciliacion import (
@@ -27,6 +34,10 @@ from app.schemas.conciliacion import (
     ConciliacionItemOut,
     ConciliacionItemPatch,
     ConciliacionItemUpdateEstado,
+    LiquidacionContratoFijoCreate,
+    ConciliacionManifiestoCreate,
+    ConciliacionManifiestoUpdate,
+    ConciliacionManifiestoOut,
     ConciliacionOut,
     ConciliacionWorkflowAction,
     ConciliacionUpdateEstado,
@@ -35,10 +46,18 @@ from app.services.pricing import apply_rentabilidad
 from app.services.audit import log_change
 from app.services.notifications import create_internal_notifications, send_manual_email
 from app.services.avansat import fetch_avansat_by_manifiesto
+from app.services.avansat_cache import resolve_avansat_from_cache_only
 from app.services.visibility import sanitize_item_for_role
 from app.schemas.viaje import AdjuntarViajesRequest, ViajeOut
 
 router = APIRouter(prefix="/conciliaciones", tags=["conciliaciones"])
+
+MANIFIESTO_CONTEXTO_CONCILIACION = "CONCILIACION"
+MANIFIESTO_CONTEXTO_LIQUIDACION = "LIQUIDACION_CONTRATO_FIJO"
+MANIFIESTO_CONTEXTOS_VALIDOS = {
+    MANIFIESTO_CONTEXTO_CONCILIACION,
+    MANIFIESTO_CONTEXTO_LIQUIDACION,
+}
 
 
 def _estado_conciliacion_viaje(viaje: Viaje):
@@ -140,8 +159,10 @@ def _existing_item_viaje_ids(db: Session) -> set[int]:
 
 
 def _validate_user_access_operacion(user: Usuario, operacion: Operacion) -> None:
-    if user.rol == UserRole.CLIENTE and user.cliente_id != operacion.cliente_id:
-        raise HTTPException(status_code=403, detail="Operacion no disponible para este cliente")
+    if user.rol == UserRole.CLIENTE:
+        is_assigned = any(op.id == operacion.id for op in user.operaciones_asignadas)
+        if not is_assigned:
+            raise HTTPException(status_code=403, detail="Operacion no disponible para este cliente")
     if user.rol == UserRole.TERCERO and user.tercero_id != operacion.tercero_id:
         raise HTTPException(status_code=403, detail="Operacion no disponible para este tercero")
 
@@ -215,7 +236,15 @@ def _resolve_recipients(db: Session, operacion: Operacion, roles: list[UserRole]
     for role in roles:
         query = db.query(Usuario).filter(Usuario.activo.is_(True), Usuario.rol == role)
         if role == UserRole.CLIENTE:
-            query = query.filter(Usuario.cliente_id == operacion.cliente_id)
+            query = query.join(
+                usuario_operaciones_asignadas,
+                usuario_operaciones_asignadas.c.usuario_id == Usuario.id,
+            ).filter(
+                Usuario.cliente_id == operacion.cliente_id,
+                usuario_operaciones_asignadas.c.operacion_id == operacion.id,
+            )
+            recipients.extend(query.order_by(Usuario.id.asc()).all())
+            continue
         elif role == UserRole.TERCERO:
             query = query.filter(Usuario.tercero_id == operacion.tercero_id)
         user = query.order_by(Usuario.id.asc()).first()
@@ -231,6 +260,81 @@ def _display_estado(conc: Conciliacion) -> str:
     if estado == "APROBADA" and conc.enviada_facturacion:
         return "ENVIADA_A_FACTURAR"
     return estado
+
+
+def _normalize_manifiesto_contexto(raw_contexto: str | None) -> str:
+    contexto = str(raw_contexto or MANIFIESTO_CONTEXTO_CONCILIACION).strip().upper()
+    if contexto not in MANIFIESTO_CONTEXTOS_VALIDOS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Contexto de manifiesto invalido. "
+                "Usa CONCILIACION o LIQUIDACION_CONTRATO_FIJO"
+            ),
+        )
+    return contexto
+
+
+def _contexto_label(contexto: str) -> str:
+    if contexto == MANIFIESTO_CONTEXTO_LIQUIDACION:
+        return "liquidacion contrato fijo"
+    return "conciliacion"
+
+
+def _mark_borrador_dirty(conc: Conciliacion) -> None:
+    estado = str(getattr(conc.estado, "value", conc.estado))
+    if estado == "BORRADOR":
+        conc.borrador_guardado = False
+
+
+def _next_liquidacion_id(db: Session, conciliacion_id: int) -> int:
+    items = (
+        db.query(ConciliacionItem)
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+        .all()
+    )
+    max_id = 0
+    for item in items:
+        meta = _extract_liquidacion_metadata(item)
+        if not meta:
+            continue
+        liq_id = meta.get("liquidacion_contrato_fijo_id")
+        if isinstance(liq_id, int) and liq_id > max_id:
+            max_id = liq_id
+    return max_id + 1
+
+
+def _liquidacion_exists(db: Session, conciliacion_id: int, liquidacion_id: int) -> bool:
+    if liquidacion_id <= 0:
+        return False
+    items = (
+        db.query(ConciliacionItem)
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+        .all()
+    )
+    for item in items:
+        meta = _extract_liquidacion_metadata(item)
+        if not meta:
+            continue
+        if meta.get("liquidacion_contrato_fijo_id") == liquidacion_id:
+            return True
+    return False
+
+
+def _has_conductor_relevo_liquidacion(db: Session, conciliacion_id: int) -> bool:
+    relevo_items = (
+        db.query(ConciliacionItem)
+        .filter(
+            ConciliacionItem.conciliacion_id == conciliacion_id,
+            ConciliacionItem.tipo == ItemTipo.CONDUCTOR_RELEVO,
+        )
+        .all()
+    )
+    for item in relevo_items:
+        meta = _extract_liquidacion_metadata(item)
+        if meta and bool(meta.get("liquidacion_es_relevo")):
+            return True
+    return False
 
 
 def _find_last_status_actor(db: Session, conc: Conciliacion) -> tuple[str | None, str | None]:
@@ -301,6 +405,70 @@ def _as_float(value: object) -> float:
         return 0.0
 
 
+def _split_total_evenly(total: float, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    total_dec = Decimal(str(total))
+    if count == 1:
+        return [float(total_dec)]
+
+    base = (total_dec / Decimal(count)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    distributed: list[Decimal] = [base for _ in range(count - 1)]
+    assigned = sum(distributed, Decimal("0.00"))
+    distributed.append(total_dec - assigned)
+    return [float(value) for value in distributed]
+
+
+def _build_liquidacion_metadata(
+    liquidacion_id: int,
+    periodo_inicio: date,
+    periodo_fin: date,
+    es_relevo: bool,
+    relevo_con_valor: bool | None,
+) -> str:
+    payload = {
+        "kind": "LIQUIDACION_CONTRATO_FIJO",
+        "liquidacion_id": liquidacion_id,
+        "periodo_inicio": str(periodo_inicio),
+        "periodo_fin": str(periodo_fin),
+        "es_relevo": es_relevo,
+    }
+    if relevo_con_valor is not None:
+        payload["relevo_con_valor"] = relevo_con_valor
+    return json.dumps(payload, ensure_ascii=True)
+
+
+def _extract_liquidacion_metadata(item: ConciliacionItem) -> dict | None:
+    if item.tipo not in {ItemTipo.OTRO, ItemTipo.CONDUCTOR_RELEVO}:
+        return None
+    raw = (item.descripcion or "").strip()
+    if not raw:
+        return None
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+
+    if payload.get("kind") != "LIQUIDACION_CONTRATO_FIJO":
+        return None
+
+    try:
+        periodo_inicio = date.fromisoformat(str(payload.get("periodo_inicio") or ""))
+        periodo_fin = date.fromisoformat(str(payload.get("periodo_fin") or ""))
+    except Exception:
+        return None
+
+    return {
+        "liquidacion_contrato_fijo": True,
+        "liquidacion_contrato_fijo_id": payload.get("liquidacion_id"),
+        "liquidacion_periodo_inicio": periodo_inicio,
+        "liquidacion_periodo_fin": periodo_fin,
+        "liquidacion_es_relevo": bool(payload.get("es_relevo", item.tipo == ItemTipo.CONDUCTOR_RELEVO)),
+        "liquidacion_relevo_con_valor": payload.get("relevo_con_valor"),
+    }
+
+
 def _normalize_manifiesto_for_lookup(value: object) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -313,7 +481,42 @@ def _normalize_manifiesto_for_lookup(value: object) -> str:
     return raw
 
 
-def _fetch_avansat_with_fallback(manifiesto: str) -> dict:
+def _normalize_placa_for_compare(value: object) -> str:
+    raw = str(value or "").strip().upper()
+    return "".join(ch for ch in raw if ch.isalnum())
+
+
+def _is_liquidacion_manifest_mismatch(
+    db: Session,
+    conciliacion_id: int,
+    manifiesto_numero: str,
+) -> bool:
+    manifiesto = _normalize_manifiesto_for_lookup(manifiesto_numero)
+    if not manifiesto:
+        return True
+
+    items = (
+        db.query(ConciliacionItem)
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+        .all()
+    )
+    placas_liquidacion = {
+        _normalize_placa_for_compare(item.placa)
+        for item in items
+        if _extract_liquidacion_metadata(item) and _normalize_placa_for_compare(item.placa)
+    }
+    if not placas_liquidacion:
+        return True
+
+    avansat = _fetch_avansat_with_fallback(manifiesto)
+    placa_avansat = _normalize_placa_for_compare(avansat.get("placa_vehiculo") or "")
+    if not placa_avansat:
+        return True
+
+    return placa_avansat not in placas_liquidacion
+
+
+def _fetch_avansat_with_fallback(manifiesto: str, prefetched: dict[str, dict] | None = None) -> dict:
     if not manifiesto:
         return {}
     attempts = [manifiesto, manifiesto.lstrip("0")]
@@ -323,10 +526,103 @@ def _fetch_avansat_with_fallback(manifiesto: str) -> dict:
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
+        if prefetched:
+            prefetched_data = prefetched.get(candidate) or {}
+            if prefetched_data:
+                return prefetched_data
         data = fetch_avansat_by_manifiesto(candidate)
         if data:
             return data
     return {}
+
+
+def _prefetch_avansat_for_excel_or_raise(
+    db: Session,
+    manifests: list[ConciliacionManifiesto],
+    liquidacion_manifests: list[ConciliacionManifiesto],
+) -> dict[str, dict]:
+    normalized_manifiestos = [
+        _normalize_manifiesto_for_lookup(row.manifiesto_numero)
+        for row in [*manifests, *liquidacion_manifests]
+        if _normalize_manifiesto_for_lookup(row.manifiesto_numero)
+    ]
+    unique_manifiestos = list(dict.fromkeys(normalized_manifiestos))
+    if not unique_manifiestos:
+        return {}
+
+    prefetched, missing = resolve_avansat_from_cache_only(db, unique_manifiestos)
+    if missing:
+        total = len(unique_manifiestos)
+        missing_count = len(missing)
+        resolved_count = total - missing_count
+        missing_list = ", ".join(missing[:10])
+        suffix = "" if len(missing) <= 10 else f" y {len(missing) - 10} mas"
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "La cache interna de Avansat aun no tiene todos los manifiestos requeridos para generar el Excel. "
+                f"Disponibles: {resolved_count}/{total}. "
+                f"Faltantes ({missing_count}): {missing_list}{suffix}. "
+                "Espera la siguiente sincronizacion automatica (cada 30 minutos) o ejecuta una sincronizacion manual desde Consulta Avansat."
+            ),
+        )
+
+    return prefetched
+
+
+def _validate_manifests_match_plates_or_raise(
+    items: list[ConciliacionItem],
+    manifests: list[ConciliacionManifiesto],
+    avansat_prefetched: dict[str, dict],
+    contexto: str,
+) -> None:
+    placas_contexto = {
+        _normalize_placa_for_compare(item.placa)
+        for item in items
+        if (
+            (
+                contexto == MANIFIESTO_CONTEXTO_LIQUIDACION
+                and _extract_liquidacion_metadata(item)
+            )
+            or (
+                contexto == MANIFIESTO_CONTEXTO_CONCILIACION
+                and not _extract_liquidacion_metadata(item)
+            )
+        )
+        and _normalize_placa_for_compare(item.placa)
+    }
+
+    manifests_invalidos: list[dict[str, str | int]] = []
+    for manifest_row in manifests:
+        manifiesto = _normalize_manifiesto_for_lookup(manifest_row.manifiesto_numero)
+        if not manifiesto:
+            continue
+        avansat = avansat_prefetched.get(manifiesto) or {}
+        placa_avansat = _normalize_placa_for_compare(avansat.get("placa_vehiculo") or "")
+        if not placa_avansat or placa_avansat not in placas_contexto:
+            manifests_invalidos.append(
+                {
+                    "id": manifest_row.id,
+                    "manifiesto_numero": manifiesto,
+                    "placa_avansat": str(avansat.get("placa_vehiculo") or ""),
+                }
+            )
+
+    if manifests_invalidos:
+        invalid_numbers = [str(row.get("manifiesto_numero") or "") for row in manifests_invalidos]
+        invalid_list = ", ".join(invalid_numbers[:10])
+        suffix = "" if len(manifests_invalidos) <= 10 else f" y {len(manifests_invalidos) - 10} mas"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "Los siguientes manifiestos no corresponden a ningun vehiculo de la "
+                    f"{_contexto_label(contexto)}: "
+                    f"{invalid_list}{suffix}."
+                ),
+                "invalid_manifiestos": manifests_invalidos,
+            },
+        )
 
 
 def _prepare_facturacion_rows(items: list[ConciliacionItem]) -> tuple[list[dict], list[str]]:
@@ -487,6 +783,836 @@ def _build_facturacion_excel(conc: Conciliacion, rows: list[dict]) -> bytes:
     return output.getvalue()
 
 
+def _build_conciliacion_excel(
+    conc: Conciliacion,
+    items: list[ConciliacionItem],
+    manifests: list[ConciliacionManifiesto],
+    liquidacion_manifests: list[ConciliacionManifiesto],
+    user_role: UserRole,
+    tipo_vehiculo_by_placa: dict[str, str],
+    avansat_prefetched: dict[str, dict] | None = None,
+) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "resumen"
+
+    header_fill = PatternFill(fill_type="solid", fgColor="E5E7EB")
+    header_font = Font(bold=True, color="1F2937")
+    section_fill = PatternFill(fill_type="solid", fgColor="FDE68A")
+    section_font = Font(bold=True, color="111827")
+    center = Alignment(horizontal="center", vertical="center")
+    thin = Side(style="thin", color="D1D5DB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    cop_format = '"$" #,##0'
+    pct_format = '#,##0.##" %"'
+
+    show_tarifa_tercero = user_role != UserRole.CLIENTE
+    show_tarifa_cliente = user_role != UserRole.TERCERO
+    show_cointra_financials = user_role == UserRole.COINTRA
+
+    liquidacion_items: list[tuple[ConciliacionItem, dict]] = []
+    additional_items: list[tuple[ConciliacionItem, dict | None]] = []
+    for item in items:
+        liq_meta = _extract_liquidacion_metadata(item)
+        if liq_meta:
+            liquidacion_items.append((item, liq_meta))
+        else:
+            additional_items.append((item, None))
+
+    estado_display = _display_estado(conc)
+    estado_label = estado_display.replace("_", " ")
+    estado_styles = {
+        "BORRADOR": ("ECFDF5", "065F46"),
+        "EN_REVISION": ("FFFBEB", "92400E"),
+        "APROBADA": ("F0FDFA", "115E59"),
+        "ENVIADA_A_FACTURAR": ("F0F9FF", "075985"),
+    }
+    estado_fill_color, estado_font_color = estado_styles.get(estado_display, ("F7FEE7", "3F6212"))
+
+    current_row = 1
+    ws.cell(row=current_row, column=1, value=f"Conciliacion #{conc.id} - {conc.nombre}")
+    ws.cell(row=current_row, column=1).font = Font(bold=True, size=12, color="111827")
+    estado_cell = ws.cell(row=current_row, column=3, value=f"ESTADO: {estado_label}")
+    estado_cell.fill = PatternFill(fill_type="solid", fgColor=estado_fill_color)
+    estado_cell.font = Font(bold=True, color=estado_font_color)
+    estado_cell.alignment = Alignment(horizontal="center", vertical="center")
+    estado_cell.border = border
+    current_row += 1
+    ws.cell(row=current_row, column=1, value=f"Periodo: {conc.fecha_inicio} a {conc.fecha_fin}")
+    ws.cell(row=current_row, column=1).font = Font(size=10, color="374151")
+    current_row += 2
+
+    # Bloque superior: liquidacion contrato fijo
+    ws.cell(row=current_row, column=1, value="LIQUIDACION CONTRATO FIJO")
+    ws.cell(row=current_row, column=1).font = Font(bold=True, size=11, color="111827")
+    current_row += 1
+
+    top_headers = ["Placa", "Tipo Vehiculo"]
+    if show_tarifa_cliente:
+        top_headers.append("Valor Cliente")
+    if show_tarifa_tercero:
+        top_headers.append("Valor Tercero")
+    if show_cointra_financials:
+        top_headers.extend(["Rentabilidad", "Ganancia Cointra"])
+
+    top_col_idx = {header: idx for idx, header in enumerate(top_headers, start=1)}
+    for idx, header in enumerate(top_headers, start=1):
+        cell = ws.cell(row=current_row, column=idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+    current_row += 1
+
+    top_start_row = current_row
+    liquidacion_items_sorted = sorted(
+        liquidacion_items,
+        key=lambda pair: (
+            str(pair[0].placa or "").upper(),
+            pair[0].fecha_servicio,
+            pair[0].id,
+        ),
+    )
+
+    for item, liq_meta in liquidacion_items_sorted:
+        placa = (item.placa or "").upper()
+        tipo_vehiculo = tipo_vehiculo_by_placa.get(placa, "")
+        if liq_meta.get("liquidacion_es_relevo"):
+            tipo_vehiculo = "CONDUCTOR RELEVO"
+
+        tarifa_tercero = _as_float(item.tarifa_tercero)
+        tarifa_cliente = _as_float(item.tarifa_cliente)
+        ganancia = tarifa_cliente - tarifa_tercero
+        rentabilidad = _as_float(item.rentabilidad)
+
+        ws.cell(row=current_row, column=top_col_idx["Placa"], value=placa)
+        ws.cell(row=current_row, column=top_col_idx["Tipo Vehiculo"], value=tipo_vehiculo)
+        if "Valor Cliente" in top_col_idx:
+            c = ws.cell(row=current_row, column=top_col_idx["Valor Cliente"], value=tarifa_cliente)
+            c.number_format = cop_format
+        if "Valor Tercero" in top_col_idx:
+            c = ws.cell(row=current_row, column=top_col_idx["Valor Tercero"], value=tarifa_tercero)
+            c.number_format = cop_format
+        if "Rentabilidad" in top_col_idx:
+            c = ws.cell(row=current_row, column=top_col_idx["Rentabilidad"], value=rentabilidad)
+            c.number_format = pct_format
+        if "Ganancia Cointra" in top_col_idx:
+            c = ws.cell(row=current_row, column=top_col_idx["Ganancia Cointra"], value=ganancia)
+            c.number_format = cop_format
+
+        for col_idx in range(1, len(top_headers) + 1):
+            ws.cell(row=current_row, column=col_idx).border = border
+        current_row += 1
+
+    if current_row == top_start_row:
+        ws.cell(row=current_row, column=1, value="(sin registros de contrato fijo)")
+        ws.cell(row=current_row, column=1).font = Font(italic=True, color="6B7280")
+        current_row += 1
+
+    top_total_tercero = sum(_as_float(item.tarifa_tercero) for item, _ in liquidacion_items_sorted)
+    top_total_cliente = sum(_as_float(item.tarifa_cliente) for item, _ in liquidacion_items_sorted)
+    top_ganancia = top_total_cliente - top_total_tercero
+    top_rentabilidad = (top_ganancia / top_total_cliente * 100) if top_total_cliente > 0 else 0.0
+
+    current_row += 1
+    ws.cell(row=current_row, column=2, value="TOTAL CONTRATO FIJO")
+    if "Valor Cliente" in top_col_idx:
+        c = ws.cell(row=current_row, column=top_col_idx["Valor Cliente"], value=top_total_cliente)
+        c.number_format = cop_format
+    if "Valor Tercero" in top_col_idx:
+        c = ws.cell(row=current_row, column=top_col_idx["Valor Tercero"], value=top_total_tercero)
+        c.number_format = cop_format
+    if "Rentabilidad" in top_col_idx:
+        c = ws.cell(row=current_row, column=top_col_idx["Rentabilidad"], value=top_rentabilidad)
+        c.number_format = pct_format
+    if "Ganancia Cointra" in top_col_idx:
+        c = ws.cell(row=current_row, column=top_col_idx["Ganancia Cointra"], value=top_ganancia)
+        c.number_format = cop_format
+
+    for col_idx in range(1, len(top_headers) + 1):
+        cell = ws.cell(row=current_row, column=col_idx)
+        cell.fill = section_fill
+        cell.font = section_font
+        cell.border = border
+
+    # Bloque inferior: adicionales/otros servicios
+    current_row += 2
+    ws.cell(row=current_row, column=1, value="SERVICIOS")
+    ws.cell(row=current_row, column=1).font = Font(bold=True, size=11, color="111827")
+    current_row += 1
+
+    bottom_headers = ["Placa", "Tipo Vehiculo", "Fecha", "Titulo Servicio", "Tipo Servicio"]
+    if show_tarifa_cliente:
+        bottom_headers.append("Valor Cliente")
+    if show_tarifa_tercero:
+        bottom_headers.append("Valor Tercero")    
+    if show_cointra_financials:
+        bottom_headers.extend(["Rentabilidad", "Ganancia Cointra"])
+    bottom_headers.append("Observaciones")
+    bottom_col_idx = {header: idx for idx, header in enumerate(bottom_headers, start=1)}
+
+    for idx, header in enumerate(bottom_headers, start=1):
+        cell = ws.cell(row=current_row, column=idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+    current_row += 1
+
+    additional_sorted = sorted(
+        additional_items,
+        key=lambda pair: (
+            str(pair[0].placa or "").upper(),
+            pair[0].fecha_servicio,
+            pair[0].id,
+        ),
+    )
+
+    group_placa = None
+    group_total_tercero = 0.0
+    group_total_cliente = 0.0
+    all_total_tercero = 0.0
+    all_total_cliente = 0.0
+
+    def _write_group_total(row_num: int, placa: str, total_tercero: float, total_cliente: float) -> int:
+        if not placa:
+            return row_num
+        ganancia = total_cliente - total_tercero
+        rentabilidad = (ganancia / total_cliente * 100) if total_cliente > 0 else 0.0
+        ws.cell(row=row_num, column=2, value=f"TOTAL PLACA {placa}")
+        if "Valor Cliente" in bottom_col_idx:
+            c = ws.cell(row=row_num, column=bottom_col_idx["Valor Cliente"], value=total_cliente)
+            c.number_format = cop_format
+        if "Valor Tercero" in bottom_col_idx:
+            c = ws.cell(row=row_num, column=bottom_col_idx["Valor Tercero"], value=total_tercero)
+            c.number_format = cop_format        
+        if "Rentabilidad" in bottom_col_idx:
+            c = ws.cell(row=row_num, column=bottom_col_idx["Rentabilidad"], value=rentabilidad)
+            c.number_format = pct_format
+        if "Ganancia Cointra" in bottom_col_idx:
+            c = ws.cell(row=row_num, column=bottom_col_idx["Ganancia Cointra"], value=ganancia)
+            c.number_format = cop_format
+
+        for col_idx in range(1, len(bottom_headers) + 1):
+            cell = ws.cell(row=row_num, column=col_idx)
+            cell.font = section_font
+            cell.border = border
+        return row_num + 1
+
+    for item, _ in additional_sorted:
+        placa = (item.placa or "").upper() or "SIN_PLACA"
+        if group_placa is None:
+            group_placa = placa
+        elif placa != group_placa:
+            current_row = _write_group_total(current_row, group_placa, group_total_tercero, group_total_cliente)
+            group_placa = placa
+            group_total_tercero = 0.0
+            group_total_cliente = 0.0
+
+        tipo_vehiculo = tipo_vehiculo_by_placa.get(placa, "")
+        titulo_servicio = item.viaje.titulo if item.viaje else ""
+        tipo_servicio = (
+            (item.servicio_nombre or "").strip()
+            or (item.servicio_codigo or "").strip()
+            or str(getattr(item.tipo, "value", item.tipo))
+        )
+        tarifa_tercero = _as_float(item.tarifa_tercero)
+        tarifa_cliente = _as_float(item.tarifa_cliente)
+        ganancia = tarifa_cliente - tarifa_tercero
+        rentabilidad = _as_float(item.rentabilidad)
+
+        group_total_tercero += tarifa_tercero
+        group_total_cliente += tarifa_cliente
+        all_total_tercero += tarifa_tercero
+        all_total_cliente += tarifa_cliente
+
+        ws.cell(row=current_row, column=bottom_col_idx["Placa"], value=placa)
+        ws.cell(row=current_row, column=bottom_col_idx["Tipo Vehiculo"], value=tipo_vehiculo)
+        ws.cell(row=current_row, column=bottom_col_idx["Fecha"], value=str(item.fecha_servicio))
+        ws.cell(row=current_row, column=bottom_col_idx["Titulo Servicio"], value=titulo_servicio)
+        ws.cell(row=current_row, column=bottom_col_idx["Tipo Servicio"], value=tipo_servicio)
+        if "Valor Cliente" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Valor Cliente"], value=tarifa_cliente)
+            c.number_format = cop_format
+        if "Valor Tercero" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Valor Tercero"], value=tarifa_tercero)
+            c.number_format = cop_format        
+        if "Rentabilidad" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Rentabilidad"], value=rentabilidad)
+            c.number_format = pct_format
+        if "Ganancia Cointra" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Ganancia Cointra"], value=ganancia)
+            c.number_format = cop_format
+        ws.cell(row=current_row, column=bottom_col_idx["Observaciones"], value=item.descripcion or "")
+
+        for col_idx in range(1, len(bottom_headers) + 1):
+            ws.cell(row=current_row, column=col_idx).border = border
+        current_row += 1
+
+    if not additional_sorted:
+        ws.cell(row=current_row, column=1, value="(sin servicios adicionales)")
+        ws.cell(row=current_row, column=1).font = Font(italic=True, color="6B7280")
+        current_row += 1
+    else:
+        current_row = _write_group_total(current_row, group_placa or "", group_total_tercero, group_total_cliente)
+
+        all_ganancia = all_total_cliente - all_total_tercero
+        all_rentabilidad = (all_ganancia / all_total_cliente * 100) if all_total_cliente > 0 else 0.0
+        ws.cell(row=current_row, column=2, value="TOTAL SERVICIOS")
+        if "Valor Cliente" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Valor Cliente"], value=all_total_cliente)
+            c.number_format = cop_format
+        if "Valor Tercero" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Valor Tercero"], value=all_total_tercero)
+            c.number_format = cop_format        
+        if "Rentabilidad" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Rentabilidad"], value=all_rentabilidad)
+            c.number_format = pct_format
+        if "Ganancia Cointra" in bottom_col_idx:
+            c = ws.cell(row=current_row, column=bottom_col_idx["Ganancia Cointra"], value=all_ganancia)
+            c.number_format = cop_format
+        for col_idx in range(1, len(bottom_headers) + 1):
+            cell = ws.cell(row=current_row, column=col_idx)
+            cell.fill = section_fill
+            cell.font = section_font
+            cell.border = border
+        current_row += 2
+
+    # Ajuste de ancho general
+    for col_idx in range(1, max(len(top_headers), len(bottom_headers)) + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 22
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 26
+    ws.column_dimensions["C"].width = 42
+    ws.column_dimensions["D"].width = 30
+    ws.column_dimensions["E"].width = 20
+    ws.column_dimensions["F"].width = 20
+    ws.column_dimensions["G"].width = 18
+    ws.column_dimensions["H"].width = 18
+    ws.column_dimensions["I"].width = 20
+    ws.column_dimensions["J"].width = 20
+    ws.column_dimensions["K"].width = 16
+    ws.column_dimensions["L"].width = 22
+
+    # Hoja 2: quincena (manifiestos asociados a liquidacion contrato fijo + datos Avansat)
+    manifest_financials: dict[str, dict[str, float]] = {}
+    for item in items:
+        manifest_key = _normalize_manifiesto_for_lookup(item.manifiesto_numero)
+        if not manifest_key:
+            continue
+        bucket = manifest_financials.setdefault(
+            manifest_key,
+            {"valor_tercero": 0.0, "valor_cliente": 0.0},
+        )
+        bucket["valor_tercero"] += _as_float(item.tarifa_tercero)
+        bucket["valor_cliente"] += _as_float(item.tarifa_cliente)
+
+    liquidacion_totals_by_placa: dict[str, dict[str, float]] = {}
+    for liquidacion_item, _ in liquidacion_items:
+        placa_key = str(liquidacion_item.placa or "").strip().upper()
+        if not placa_key:
+            continue
+        plate_bucket = liquidacion_totals_by_placa.setdefault(
+            placa_key,
+            {"valor_tercero": 0.0, "valor_cliente": 0.0},
+        )
+        plate_bucket["valor_tercero"] += _as_float(liquidacion_item.tarifa_tercero)
+        plate_bucket["valor_cliente"] += _as_float(liquidacion_item.tarifa_cliente)
+
+    ws_quincena = wb.create_sheet("quincena")
+    quincena_headers = [
+        "Manifiesto",
+        "Fecha Emision",
+        "Placa Vehiculo",
+        "Trayler",
+        "Remesa",
+        "Producto",
+        "Ciudad Origen",
+        "Ciudad Destino",
+    ]
+    if show_tarifa_cliente:
+        quincena_headers.append("Valor Cliente")
+    if show_tarifa_tercero:
+        quincena_headers.append("Valor Tercero")
+    if show_cointra_financials:
+        quincena_headers.extend(["Rentabilidad", "Ganancia Cointra"])
+
+    quincena_col_idx = {header: idx for idx, header in enumerate(quincena_headers, start=1)}
+    ws_quincena.append(quincena_headers)
+    for idx, cell in enumerate(ws_quincena[1], start=1):
+        cell.fill = header_fill
+        if quincena_headers[idx - 1] in {"Valor Tercero", "Valor Cliente", "Rentabilidad", "Ganancia Cointra"}:
+            cell.fill = section_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+
+    def _write_quincena_block_header(row_idx: int) -> None:
+        for idx, header in enumerate(quincena_headers, start=1):
+            cell = ws_quincena.cell(row=row_idx, column=idx, value=header)
+            cell.fill = header_fill
+            if header in {"Valor Tercero", "Valor Cliente", "Rentabilidad", "Ganancia Cointra"}:
+                cell.fill = section_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+
+    manifest_entries: list[dict[str, object]] = []
+    liquidacion_manifests_sorted = sorted(
+        liquidacion_manifests,
+        key=lambda row: (str(row.manifiesto_numero or ""), row.id),
+    )
+    avansat_lookup = avansat_prefetched or {}
+    for manifest_row in liquidacion_manifests_sorted:
+        manifiesto = _normalize_manifiesto_for_lookup(manifest_row.manifiesto_numero)
+        avansat = avansat_lookup.get(manifiesto) or {}
+        remesas = avansat.get("remesas") if isinstance(avansat.get("remesas"), list) else []
+        remesas_rows = [r for r in remesas if isinstance(r, dict)]
+        if not remesas_rows:
+            remesas_rows = [{"remesa": avansat.get("remesa") or "", "producto": avansat.get("producto") or ""}]
+
+        financials = manifest_financials.get(manifiesto, {"valor_tercero": 0.0, "valor_cliente": 0.0})
+        valor_tercero = _as_float(financials.get("valor_tercero"))
+        valor_cliente = _as_float(financials.get("valor_cliente"))
+        ganancia = valor_cliente - valor_tercero
+        rentabilidad = (ganancia / valor_cliente * 100) if valor_cliente > 0 else 0.0
+        placa = str(avansat.get("placa_vehiculo") or "").strip().upper() or "SIN_PLACA"
+
+        manifest_entries.append(
+            {
+                "placa": placa,
+                "manifiesto": manifiesto,
+                "fecha_emision": avansat.get("fecha_emision") or "",
+                "trayler": avansat.get("trayler") or "",
+                "ciudad_origen": avansat.get("ciudad_origen") or "",
+                "ciudad_destino": avansat.get("ciudad_destino") or "",
+                "remesas": remesas_rows,
+                "valor_tercero": valor_tercero,
+                "valor_cliente": valor_cliente,
+                "rentabilidad": rentabilidad,
+                "ganancia": ganancia,
+            }
+        )
+
+    manifest_entries.sort(key=lambda row: (str(row["placa"]), str(row["manifiesto"])))
+
+    if not manifest_entries:
+        ws_quincena.append(["Sin manifiestos asociados a liquidacion contrato fijo"])
+        ws_quincena.cell(row=2, column=1).font = Font(italic=True, color="6B7280")
+    else:
+        current_row = 2
+        total_general_tercero = 0.0
+        total_general_cliente = 0.0
+        placas = sorted({str(row["placa"]) for row in manifest_entries})
+
+        for plate_index, placa in enumerate(placas):
+            plate_rows = [row for row in manifest_entries if str(row["placa"]) == placa]
+            total_placa_tercero = 0.0
+            total_placa_cliente = 0.0
+
+            liquidacion_totals = liquidacion_totals_by_placa.get(placa)
+            if liquidacion_totals:
+                total_placa_tercero = _as_float(liquidacion_totals.get("valor_tercero"))
+                total_placa_cliente = _as_float(liquidacion_totals.get("valor_cliente"))
+            else:
+                # Fallback: si no hay registro de liquidacion para la placa, conserva suma por manifiestos.
+                total_placa_tercero = sum(_as_float(row.get("valor_tercero")) for row in plate_rows)
+                total_placa_cliente = sum(_as_float(row.get("valor_cliente")) for row in plate_rows)
+
+            manifest_count = len(plate_rows)
+            per_manifest_tercero = _split_total_evenly(total_placa_tercero, manifest_count)
+            per_manifest_cliente = _split_total_evenly(total_placa_cliente, manifest_count)
+
+            if plate_index > 0:
+                current_row += 2
+                _write_quincena_block_header(current_row)
+                current_row += 1
+
+            for entry_idx, entry in enumerate(plate_rows):
+                remesas_rows = entry["remesas"] if isinstance(entry["remesas"], list) else []
+                manifest_valor_tercero = per_manifest_tercero[entry_idx] if entry_idx < len(per_manifest_tercero) else 0.0
+                manifest_valor_cliente = per_manifest_cliente[entry_idx] if entry_idx < len(per_manifest_cliente) else 0.0
+                manifest_ganancia = manifest_valor_cliente - manifest_valor_tercero
+                manifest_rentabilidad = (
+                    (manifest_ganancia / manifest_valor_cliente * 100) if manifest_valor_cliente > 0 else 0.0
+                )
+                first_row_for_manifest = True
+                for remesa_row in remesas_rows:
+                    row_values: dict[str, object] = {
+                        "Manifiesto": entry["manifiesto"],
+                        "Fecha Emision": entry["fecha_emision"],
+                        "Placa Vehiculo": entry["placa"],
+                        "Trayler": entry["trayler"],
+                        "Remesa": str((remesa_row or {}).get("remesa") or "").strip(),
+                        "Producto": str((remesa_row or {}).get("producto") or "").strip(),
+                        "Ciudad Origen": entry["ciudad_origen"],
+                        "Ciudad Destino": entry["ciudad_destino"],
+                    }
+                    if show_tarifa_tercero:
+                        row_values["Valor Tercero"] = manifest_valor_tercero if first_row_for_manifest else None
+                    if show_tarifa_cliente:
+                        row_values["Valor Cliente"] = manifest_valor_cliente if first_row_for_manifest else None
+                    if show_cointra_financials:
+                        row_values["Rentabilidad"] = manifest_rentabilidad if first_row_for_manifest else None
+                        row_values["Ganancia Cointra"] = manifest_ganancia if first_row_for_manifest else None
+
+                    for header, col_idx in quincena_col_idx.items():
+                        cell = ws_quincena.cell(row=current_row, column=col_idx, value=row_values.get(header, ""))
+                        cell.border = border
+                        if header in {"Valor Tercero", "Valor Cliente", "Ganancia Cointra"} and cell.value is not None:
+                            cell.number_format = cop_format
+                        if header == "Rentabilidad" and cell.value is not None:
+                            cell.number_format = pct_format
+                    current_row += 1
+                    first_row_for_manifest = False
+
+            total_general_tercero += total_placa_tercero
+            total_general_cliente += total_placa_cliente
+
+            ws_quincena.cell(row=current_row, column=quincena_col_idx["Ciudad Destino"], value=f"TOTAL PLACA {placa}")
+            total_placa_cells_to_fill = [quincena_col_idx["Ciudad Destino"]]
+            if "Valor Tercero" in quincena_col_idx:
+                c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Valor Tercero"], value=total_placa_tercero)
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(quincena_col_idx["Valor Tercero"])
+            if "Valor Cliente" in quincena_col_idx:
+                c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Valor Cliente"], value=total_placa_cliente)
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(quincena_col_idx["Valor Cliente"])
+            if "Rentabilidad" in quincena_col_idx:
+                placa_ganancia = total_placa_cliente - total_placa_tercero
+                placa_rentabilidad = (placa_ganancia / total_placa_cliente * 100) if total_placa_cliente > 0 else 0.0
+                c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Rentabilidad"], value=placa_rentabilidad)
+                c.number_format = pct_format
+                total_placa_cells_to_fill.append(quincena_col_idx["Rentabilidad"])
+            if "Ganancia Cointra" in quincena_col_idx:
+                c = ws_quincena.cell(
+                    row=current_row,
+                    column=quincena_col_idx["Ganancia Cointra"],
+                    value=total_placa_cliente - total_placa_tercero,
+                )
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(quincena_col_idx["Ganancia Cointra"])
+
+            for col_idx in range(1, len(quincena_headers) + 1):
+                cell = ws_quincena.cell(row=current_row, column=col_idx)
+                cell.font = section_font
+                cell.border = border
+            for col_idx in total_placa_cells_to_fill:
+                ws_quincena.cell(row=current_row, column=col_idx).fill = section_fill
+            current_row += 1
+
+        current_row += 2
+        ws_quincena.cell(row=current_row, column=quincena_col_idx["Ciudad Destino"], value="TOTAL GENERAL")
+        total_general_cells_to_fill = [quincena_col_idx["Ciudad Destino"]]
+        if "Valor Tercero" in quincena_col_idx:
+            c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Valor Tercero"], value=total_general_tercero)
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(quincena_col_idx["Valor Tercero"])
+        if "Valor Cliente" in quincena_col_idx:
+            c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Valor Cliente"], value=total_general_cliente)
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(quincena_col_idx["Valor Cliente"])
+        if "Rentabilidad" in quincena_col_idx:
+            total_ganancia = total_general_cliente - total_general_tercero
+            total_rentabilidad = (total_ganancia / total_general_cliente * 100) if total_general_cliente > 0 else 0.0
+            c = ws_quincena.cell(row=current_row, column=quincena_col_idx["Rentabilidad"], value=total_rentabilidad)
+            c.number_format = pct_format
+            total_general_cells_to_fill.append(quincena_col_idx["Rentabilidad"])
+        if "Ganancia Cointra" in quincena_col_idx:
+            c = ws_quincena.cell(
+                row=current_row,
+                column=quincena_col_idx["Ganancia Cointra"],
+                value=total_general_cliente - total_general_tercero,
+            )
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(quincena_col_idx["Ganancia Cointra"])
+
+        for col_idx in range(1, len(quincena_headers) + 1):
+            cell = ws_quincena.cell(row=current_row, column=col_idx)
+            cell.font = section_font
+            cell.border = border
+        for col_idx in total_general_cells_to_fill:
+            ws_quincena.cell(row=current_row, column=col_idx).fill = section_fill
+
+    quincena_widths = {
+        "Manifiesto": 20,
+        "Fecha Emision": 18,
+        "Placa Vehiculo": 20,
+        "Trayler": 18,
+        "Remesa": 20,
+        "Producto": 40,
+        "Ciudad Origen": 24,
+        "Ciudad Destino": 24,
+        "Valor Tercero": 20,
+        "Valor Cliente": 20,
+        "Rentabilidad": 16,
+        "Ganancia Cointra": 22,
+    }
+    for header, idx in quincena_col_idx.items():
+        ws_quincena.column_dimensions[get_column_letter(idx)].width = quincena_widths.get(header, 18)
+
+    # Hoja 3: servicios (manifiestos del contexto conciliacion + datos Avansat)
+    manifest_financials_servicios: dict[str, dict[str, float]] = {}
+    servicios_totals_by_placa: dict[str, dict[str, float]] = {}
+    for additional_item, _ in additional_items:
+        manifest_key = _normalize_manifiesto_for_lookup(additional_item.manifiesto_numero)
+        if manifest_key:
+            bucket = manifest_financials_servicios.setdefault(
+                manifest_key,
+                {"valor_tercero": 0.0, "valor_cliente": 0.0},
+            )
+            bucket["valor_tercero"] += _as_float(additional_item.tarifa_tercero)
+            bucket["valor_cliente"] += _as_float(additional_item.tarifa_cliente)
+
+        placa_key = str(additional_item.placa or "").strip().upper()
+        if placa_key:
+            plate_bucket = servicios_totals_by_placa.setdefault(
+                placa_key,
+                {"valor_tercero": 0.0, "valor_cliente": 0.0},
+            )
+            plate_bucket["valor_tercero"] += _as_float(additional_item.tarifa_tercero)
+            plate_bucket["valor_cliente"] += _as_float(additional_item.tarifa_cliente)
+
+    ws_servicios = wb.create_sheet("Servicios")
+    servicios_headers = [
+        "Manifiesto",
+        "Fecha Emision",
+        "Placa Vehiculo",
+        "Trayler",
+        "Remesa",
+        "Producto",
+        "Ciudad Origen",
+        "Ciudad Destino",
+    ]
+    if show_tarifa_cliente:
+        servicios_headers.append("Valor Cliente")
+    if show_tarifa_tercero:
+        servicios_headers.append("Valor Tercero")
+    if show_cointra_financials:
+        servicios_headers.extend(["Rentabilidad", "Ganancia Cointra"])
+
+    servicios_col_idx = {header: idx for idx, header in enumerate(servicios_headers, start=1)}
+    ws_servicios.append(servicios_headers)
+    for idx, cell in enumerate(ws_servicios[1], start=1):
+        cell.fill = header_fill
+        if servicios_headers[idx - 1] in {"Valor Tercero", "Valor Cliente", "Rentabilidad", "Ganancia Cointra"}:
+            cell.fill = section_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+
+    def _write_servicios_block_header(row_idx: int) -> None:
+        for idx, header in enumerate(servicios_headers, start=1):
+            cell = ws_servicios.cell(row=row_idx, column=idx, value=header)
+            cell.fill = header_fill
+            if header in {"Valor Tercero", "Valor Cliente", "Rentabilidad", "Ganancia Cointra"}:
+                cell.fill = section_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+
+    servicios_entries: list[dict[str, object]] = []
+    manifests_sorted = sorted(
+        manifests,
+        key=lambda row: (str(row.manifiesto_numero or ""), row.id),
+    )
+    avansat_servicios_prefetched = avansat_prefetched or {}
+
+    for manifest_row in manifests_sorted:
+        manifiesto = _normalize_manifiesto_for_lookup(manifest_row.manifiesto_numero)
+        avansat = avansat_servicios_prefetched.get(manifiesto) or {}
+        remesas = avansat.get("remesas") if isinstance(avansat.get("remesas"), list) else []
+        remesas_rows = [r for r in remesas if isinstance(r, dict)]
+        if not remesas_rows:
+            remesas_rows = [{"remesa": avansat.get("remesa") or "", "producto": avansat.get("producto") or ""}]
+
+        financials = manifest_financials_servicios.get(manifiesto, {"valor_tercero": 0.0, "valor_cliente": 0.0})
+        valor_tercero = _as_float(financials.get("valor_tercero"))
+        valor_cliente = _as_float(financials.get("valor_cliente"))
+        ganancia = valor_cliente - valor_tercero
+        rentabilidad = (ganancia / valor_cliente * 100) if valor_cliente > 0 else 0.0
+        placa = str(avansat.get("placa_vehiculo") or "").strip().upper() or "SIN_PLACA"
+
+        servicios_entries.append(
+            {
+                "placa": placa,
+                "manifiesto": manifiesto,
+                "fecha_emision": avansat.get("fecha_emision") or "",
+                "trayler": avansat.get("trayler") or "",
+                "ciudad_origen": avansat.get("ciudad_origen") or "",
+                "ciudad_destino": avansat.get("ciudad_destino") or "",
+                "remesas": remesas_rows,
+                "valor_tercero": valor_tercero,
+                "valor_cliente": valor_cliente,
+                "rentabilidad": rentabilidad,
+                "ganancia": ganancia,
+            }
+        )
+
+    servicios_entries.sort(key=lambda row: (str(row["placa"]), str(row["manifiesto"])))
+
+    if not servicios_entries:
+        ws_servicios.append(["Sin manifiestos asociados a conciliacion"])
+        ws_servicios.cell(row=2, column=1).font = Font(italic=True, color="6B7280")
+    else:
+        current_row = 2
+        total_general_tercero = 0.0
+        total_general_cliente = 0.0
+        placas = sorted({str(row["placa"]) for row in servicios_entries})
+
+        for plate_index, placa in enumerate(placas):
+            plate_rows = [row for row in servicios_entries if str(row["placa"]) == placa]
+            total_placa_tercero = 0.0
+            total_placa_cliente = 0.0
+
+            servicios_totals = servicios_totals_by_placa.get(placa)
+            if servicios_totals:
+                total_placa_tercero = _as_float(servicios_totals.get("valor_tercero"))
+                total_placa_cliente = _as_float(servicios_totals.get("valor_cliente"))
+            else:
+                # Fallback: si no hay registro de servicios para la placa, conserva suma por manifiestos.
+                total_placa_tercero = sum(_as_float(row.get("valor_tercero")) for row in plate_rows)
+                total_placa_cliente = sum(_as_float(row.get("valor_cliente")) for row in plate_rows)
+
+            manifest_count = len(plate_rows)
+            per_manifest_tercero = _split_total_evenly(total_placa_tercero, manifest_count)
+            per_manifest_cliente = _split_total_evenly(total_placa_cliente, manifest_count)
+
+            if plate_index > 0:
+                current_row += 2
+                _write_servicios_block_header(current_row)
+                current_row += 1
+
+            for entry_idx, entry in enumerate(plate_rows):
+                remesas_rows = entry["remesas"] if isinstance(entry["remesas"], list) else []
+                manifest_valor_tercero = per_manifest_tercero[entry_idx] if entry_idx < len(per_manifest_tercero) else 0.0
+                manifest_valor_cliente = per_manifest_cliente[entry_idx] if entry_idx < len(per_manifest_cliente) else 0.0
+                manifest_ganancia = manifest_valor_cliente - manifest_valor_tercero
+                manifest_rentabilidad = (
+                    (manifest_ganancia / manifest_valor_cliente * 100) if manifest_valor_cliente > 0 else 0.0
+                )
+                first_row_for_manifest = True
+                for remesa_row in remesas_rows:
+                    row_values: dict[str, object] = {
+                        "Manifiesto": entry["manifiesto"],
+                        "Fecha Emision": entry["fecha_emision"],
+                        "Placa Vehiculo": entry["placa"],
+                        "Trayler": entry["trayler"],
+                        "Remesa": str((remesa_row or {}).get("remesa") or "").strip(),
+                        "Producto": str((remesa_row or {}).get("producto") or "").strip(),
+                        "Ciudad Origen": entry["ciudad_origen"],
+                        "Ciudad Destino": entry["ciudad_destino"],
+                    }
+                    if show_tarifa_tercero:
+                        row_values["Valor Tercero"] = manifest_valor_tercero if first_row_for_manifest else None
+                    if show_tarifa_cliente:
+                        row_values["Valor Cliente"] = manifest_valor_cliente if first_row_for_manifest else None
+                    if show_cointra_financials:
+                        row_values["Rentabilidad"] = manifest_rentabilidad if first_row_for_manifest else None
+                        row_values["Ganancia Cointra"] = manifest_ganancia if first_row_for_manifest else None
+
+                    for header, col_idx in servicios_col_idx.items():
+                        cell = ws_servicios.cell(row=current_row, column=col_idx, value=row_values.get(header, ""))
+                        cell.border = border
+                        if header in {"Valor Tercero", "Valor Cliente", "Ganancia Cointra"} and cell.value is not None:
+                            cell.number_format = cop_format
+                        if header == "Rentabilidad" and cell.value is not None:
+                            cell.number_format = pct_format
+                    current_row += 1
+                    first_row_for_manifest = False
+
+            total_general_tercero += total_placa_tercero
+            total_general_cliente += total_placa_cliente
+
+            ws_servicios.cell(row=current_row, column=servicios_col_idx["Ciudad Destino"], value=f"TOTAL PLACA {placa}")
+            total_placa_cells_to_fill = [servicios_col_idx["Ciudad Destino"]]
+            if "Valor Tercero" in servicios_col_idx:
+                c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Valor Tercero"], value=total_placa_tercero)
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(servicios_col_idx["Valor Tercero"])
+            if "Valor Cliente" in servicios_col_idx:
+                c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Valor Cliente"], value=total_placa_cliente)
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(servicios_col_idx["Valor Cliente"])
+            if "Rentabilidad" in servicios_col_idx:
+                placa_ganancia = total_placa_cliente - total_placa_tercero
+                placa_rentabilidad = (placa_ganancia / total_placa_cliente * 100) if total_placa_cliente > 0 else 0.0
+                c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Rentabilidad"], value=placa_rentabilidad)
+                c.number_format = pct_format
+                total_placa_cells_to_fill.append(servicios_col_idx["Rentabilidad"])
+            if "Ganancia Cointra" in servicios_col_idx:
+                c = ws_servicios.cell(
+                    row=current_row,
+                    column=servicios_col_idx["Ganancia Cointra"],
+                    value=total_placa_cliente - total_placa_tercero,
+                )
+                c.number_format = cop_format
+                total_placa_cells_to_fill.append(servicios_col_idx["Ganancia Cointra"])
+
+            for col_idx in range(1, len(servicios_headers) + 1):
+                cell = ws_servicios.cell(row=current_row, column=col_idx)
+                cell.font = section_font
+                cell.border = border
+            for col_idx in total_placa_cells_to_fill:
+                ws_servicios.cell(row=current_row, column=col_idx).fill = section_fill
+            current_row += 1
+
+        current_row += 2
+        ws_servicios.cell(row=current_row, column=servicios_col_idx["Ciudad Destino"], value="TOTAL GENERAL")
+        total_general_cells_to_fill = [servicios_col_idx["Ciudad Destino"]]
+        if "Valor Tercero" in servicios_col_idx:
+            c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Valor Tercero"], value=total_general_tercero)
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(servicios_col_idx["Valor Tercero"])
+        if "Valor Cliente" in servicios_col_idx:
+            c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Valor Cliente"], value=total_general_cliente)
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(servicios_col_idx["Valor Cliente"])
+        if "Rentabilidad" in servicios_col_idx:
+            total_ganancia = total_general_cliente - total_general_tercero
+            total_rentabilidad = (total_ganancia / total_general_cliente * 100) if total_general_cliente > 0 else 0.0
+            c = ws_servicios.cell(row=current_row, column=servicios_col_idx["Rentabilidad"], value=total_rentabilidad)
+            c.number_format = pct_format
+            total_general_cells_to_fill.append(servicios_col_idx["Rentabilidad"])
+        if "Ganancia Cointra" in servicios_col_idx:
+            c = ws_servicios.cell(
+                row=current_row,
+                column=servicios_col_idx["Ganancia Cointra"],
+                value=total_general_cliente - total_general_tercero,
+            )
+            c.number_format = cop_format
+            total_general_cells_to_fill.append(servicios_col_idx["Ganancia Cointra"])
+
+        for col_idx in range(1, len(servicios_headers) + 1):
+            cell = ws_servicios.cell(row=current_row, column=col_idx)
+            cell.font = section_font
+            cell.border = border
+        for col_idx in total_general_cells_to_fill:
+            ws_servicios.cell(row=current_row, column=col_idx).fill = section_fill
+
+    servicios_widths = {
+        "Manifiesto": 20,
+        "Fecha Emision": 18,
+        "Placa Vehiculo": 20,
+        "Trayler": 18,
+        "Remesa": 20,
+        "Producto": 40,
+        "Ciudad Origen": 24,
+        "Ciudad Destino": 24,
+        "Valor Tercero": 20,
+        "Valor Cliente": 20,
+        "Rentabilidad": 16,
+        "Ganancia Cointra": 22,
+    }
+    for header, idx in servicios_col_idx.items():
+        ws_servicios.column_dimensions[get_column_letter(idx)].width = servicios_widths.get(header, 18)
+
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
 @router.post("", response_model=ConciliacionOut)
 def create_conciliacion(
     payload: ConciliacionCreate,
@@ -508,6 +1634,7 @@ def create_conciliacion(
         fecha_inicio=payload.fecha_inicio,
         fecha_fin=payload.fecha_fin,
         activo=True,
+        borrador_guardado=False,
         enviada_facturacion=False,
         created_by=user.id,
     )
@@ -592,8 +1719,14 @@ def list_conciliaciones(db: Session = Depends(get_db), user: Usuario = Depends(g
             selectinload(Conciliacion.creador),
         )
     )
-    if user.rol == UserRole.CLIENTE and user.cliente_id:
-        query = query.filter(Operacion.cliente_id == user.cliente_id, Conciliacion.estado != "BORRADOR")
+    if user.rol == UserRole.CLIENTE:
+        query = query.join(
+            usuario_operaciones_asignadas,
+            usuario_operaciones_asignadas.c.operacion_id == Operacion.id,
+        ).filter(
+            usuario_operaciones_asignadas.c.usuario_id == user.id,
+            Conciliacion.estado != "BORRADOR",
+        )
     if user.rol == UserRole.TERCERO and user.tercero_id:
         query = query.filter(Operacion.tercero_id == user.tercero_id, Conciliacion.estado != "BORRADOR")
     if not is_cointra_admin(user):
@@ -621,8 +1754,11 @@ def list_closed_history(
         )
         .filter(Conciliacion.estado == "CERRADA")
     )
-    if user.rol == UserRole.CLIENTE and user.cliente_id:
-        query = query.filter(Operacion.cliente_id == user.cliente_id)
+    if user.rol == UserRole.CLIENTE:
+        query = query.join(
+            usuario_operaciones_asignadas,
+            usuario_operaciones_asignadas.c.operacion_id == Operacion.id,
+        ).filter(usuario_operaciones_asignadas.c.usuario_id == user.id)
     if user.rol == UserRole.TERCERO and user.tercero_id:
         query = query.filter(Operacion.tercero_id == user.tercero_id)
     if not is_cointra_admin(user):
@@ -684,6 +1820,37 @@ def deactivate_conciliacion(
     conc.activo = False
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{conciliacion_id}/guardar-borrador", response_model=ConciliacionOut)
+def guardar_conciliacion_borrador(
+    conciliacion_id: int,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede guardar borradores")
+
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo conciliaciones en BORRADOR se pueden guardar")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    conc.borrador_guardado = True
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conciliacion_id,
+        campo="guardar_borrador",
+        valor_nuevo="ok",
+    )
+    db.commit()
+    db.refresh(conc)
+    return conc
 
 
 @router.post("/{conciliacion_id}/reactivar")
@@ -784,6 +1951,7 @@ def create_item(
             apply_rentabilidad(item, operacion)
 
     db.add(item)
+    _mark_borrador_dirty(conc)
     log_change(
         db,
         usuario_id=user.id,
@@ -826,13 +1994,443 @@ def list_items(
 
     items = (
         db.query(ConciliacionItem)
+        .options(selectinload(ConciliacionItem.viaje).selectinload(Viaje.servicio))
         .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
         .order_by(ConciliacionItem.id.desc())
         .all()
     )
 
-    # Enmascara campos financieros segun actor.
-    return [sanitize_item_for_role(ConciliacionItemOut.model_validate(i).model_dump(), user.rol) for i in items]
+    enriched_items: list[dict] = []
+    for item in items:
+        payload = ConciliacionItemOut.model_validate(item).model_dump()
+        liquidacion_meta = _extract_liquidacion_metadata(item)
+        if liquidacion_meta:
+            payload.update(liquidacion_meta)
+        enriched_items.append(sanitize_item_for_role(payload, user.rol))
+
+    return enriched_items
+
+
+@router.post("/{conciliacion_id}/liquidacion-contrato-fijo", response_model=list[ConciliacionItemOut])
+def create_liquidacion_contrato_fijo(
+    conciliacion_id: int,
+    payload: LiquidacionContratoFijoCreate,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede crear liquidaciones de contrato fijo")
+
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo conciliaciones en BORRADOR permiten agregar liquidaciones")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    if payload.periodo_inicio > payload.periodo_fin:
+        raise HTTPException(status_code=400, detail="El periodo de inicio no puede ser mayor al periodo final")
+
+    if payload.incluir_conductor_relevo and _has_conductor_relevo_liquidacion(db, conc.id):
+        raise HTTPException(
+            status_code=400,
+            detail="Ya existe un conductor relevo en la liquidacion de contrato fijo de esta conciliacion",
+        )
+
+    liquidacion_id = payload.liquidacion_id
+    if liquidacion_id is None:
+        liquidacion_id = _next_liquidacion_id(db, conc.id)
+    elif not _liquidacion_exists(db, conc.id, liquidacion_id):
+        raise HTTPException(
+            status_code=400,
+            detail="La liquidacion seleccionada no existe en esta conciliacion. Crea una nueva primero.",
+        )
+
+    placas_norm = sorted({placa.strip().upper() for placa in payload.placas if placa and placa.strip()})
+    if not placas_norm:
+        raise HTTPException(status_code=400, detail="Debes seleccionar al menos una placa")
+
+    vehiculos = (
+        db.query(Vehiculo)
+        .filter(
+            Vehiculo.placa.in_(placas_norm),
+            Vehiculo.activo.is_(True),
+            Vehiculo.tercero_id == operacion.tercero_id,
+        )
+        .all()
+    )
+    vehiculos_by_placa = {v.placa.upper(): v for v in vehiculos}
+    faltantes = [placa for placa in placas_norm if placa not in vehiculos_by_placa]
+    if faltantes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Las siguientes placas no estan disponibles para el tercero de la operacion: "
+                + ", ".join(faltantes)
+            ),
+        )
+
+    created_rows: list[ConciliacionItem] = []
+    for placa in placas_norm:
+        tarifa_tercero = float(payload.valor_tercero)
+        item = ConciliacionItem(
+            conciliacion_id=conc.id,
+            tipo=ItemTipo.OTRO,
+            fecha_servicio=payload.periodo_fin,
+            origen="Liquidacion Contrato Fijo",
+            destino="Liquidacion Contrato Fijo",
+            placa=placa,
+            conductor=None,
+            tarifa_tercero=tarifa_tercero,
+            tarifa_cliente=None,
+            rentabilidad=None,
+            manifiesto_numero=None,
+            remesa=None,
+            descripcion=_build_liquidacion_metadata(
+                liquidacion_id,
+                payload.periodo_inicio,
+                payload.periodo_fin,
+                es_relevo=False,
+                relevo_con_valor=None,
+            ),
+            created_by=user.id,
+            cargado_por=user.rol.value,
+        )
+        apply_rentabilidad(item, operacion)
+        db.add(item)
+        db.flush()
+        created_rows.append(item)
+
+        log_change(
+            db,
+            usuario_id=user.id,
+            conciliacion_id=conc.id,
+            item_id=item.id,
+            campo="liquidacion_contrato_fijo_creada",
+            valor_nuevo=(
+                f"liquidacion_id={liquidacion_id}; placa={placa}; periodo={payload.periodo_inicio} a {payload.periodo_fin}; "
+                f"valor_tercero={tarifa_tercero}"
+            ),
+        )
+
+        if payload.incluir_conductor_relevo:
+            relevo_tarifa_tercero = (
+                float(payload.valor_tercero_relevo)
+                if payload.relevo_con_valor and payload.valor_tercero_relevo is not None
+                else (float(payload.valor_tercero) if payload.relevo_con_valor else 0.0)
+            )
+
+            relevo_item = ConciliacionItem(
+                conciliacion_id=conc.id,
+                tipo=ItemTipo.CONDUCTOR_RELEVO,
+                fecha_servicio=payload.periodo_fin,
+                origen="Liquidacion Contrato Fijo",
+                destino="Conductor relevo",
+                placa=placa,
+                conductor="CONDUCTOR RELEVO",
+                tarifa_tercero=relevo_tarifa_tercero,
+                tarifa_cliente=None,
+                rentabilidad=None,
+                manifiesto_numero=None,
+                remesa=None,
+                descripcion=_build_liquidacion_metadata(
+                    liquidacion_id,
+                    payload.periodo_inicio,
+                    payload.periodo_fin,
+                    es_relevo=True,
+                    relevo_con_valor=payload.relevo_con_valor,
+                ),
+                created_by=user.id,
+                cargado_por=user.rol.value,
+            )
+            if relevo_tarifa_tercero > 0:
+                apply_rentabilidad(relevo_item, operacion)
+            else:
+                relevo_item.tarifa_cliente = 0
+                relevo_item.rentabilidad = float(operacion.porcentaje_rentabilidad)
+
+            db.add(relevo_item)
+            db.flush()
+            created_rows.append(relevo_item)
+            log_change(
+                db,
+                usuario_id=user.id,
+                conciliacion_id=conc.id,
+                item_id=relevo_item.id,
+                campo="liquidacion_conductor_relevo_creada",
+                valor_nuevo=(
+                    f"liquidacion_id={liquidacion_id}; placa={placa}; periodo={payload.periodo_inicio} a {payload.periodo_fin}; "
+                    f"con_valor={payload.relevo_con_valor}; valor_tercero={relevo_tarifa_tercero}"
+                ),
+            )
+
+    _mark_borrador_dirty(conc)
+
+    db.commit()
+    for row in created_rows:
+        db.refresh(row)
+
+    result: list[dict] = []
+    for row in created_rows:
+        row_payload = ConciliacionItemOut.model_validate(row).model_dump()
+        meta = _extract_liquidacion_metadata(row)
+        if meta:
+            row_payload.update(meta)
+        result.append(sanitize_item_for_role(row_payload, user.rol))
+
+    return result
+
+
+@router.get("/{conciliacion_id}/manifiestos", response_model=list[ConciliacionManifiestoOut])
+def list_manifiestos(
+    conciliacion_id: int,
+    contexto: str = Query(default=MANIFIESTO_CONTEXTO_CONCILIACION),
+    liquidacion_contrato_fijo_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+    _ensure_user_can_access_conciliacion(user, conc)
+    contexto_norm = _normalize_manifiesto_contexto(contexto)
+
+    query = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.conciliacion_id == conciliacion_id,
+            ConciliacionManifiesto.contexto == contexto_norm,
+        )
+    )
+    if contexto_norm == MANIFIESTO_CONTEXTO_LIQUIDACION and liquidacion_contrato_fijo_id is not None:
+        query = query.filter(ConciliacionManifiesto.liquidacion_contrato_fijo_id == liquidacion_contrato_fijo_id)
+
+    return query.order_by(ConciliacionManifiesto.id.asc()).all()
+
+
+@router.post("/{conciliacion_id}/manifiestos", response_model=ConciliacionManifiestoOut)
+def create_manifiesto(
+    conciliacion_id: int,
+    payload: ConciliacionManifiestoCreate,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede asociar manifiestos")
+
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo conciliaciones en BORRADOR permiten asociar manifiestos")
+
+    manifiesto_numero = payload.manifiesto_numero.strip()
+    if not manifiesto_numero:
+        raise HTTPException(status_code=400, detail="Debes escribir un manifiesto valido")
+    contexto = _normalize_manifiesto_contexto(payload.contexto)
+    liquidacion_contrato_fijo_id = payload.liquidacion_contrato_fijo_id
+
+    if contexto == MANIFIESTO_CONTEXTO_LIQUIDACION:
+        if liquidacion_contrato_fijo_id is not None and not _liquidacion_exists(db, conc.id, liquidacion_contrato_fijo_id):
+            raise HTTPException(
+                status_code=400,
+                detail="La liquidacion indicada no existe en esta conciliacion",
+            )
+    else:
+        liquidacion_contrato_fijo_id = None
+
+    exists = (
+        db.query(ConciliacionManifiesto)
+        .filter(ConciliacionManifiesto.manifiesto_numero == manifiesto_numero)
+        .first()
+    )
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"El manifiesto {manifiesto_numero} ya esta asociado a la "
+                f"{_contexto_label(exists.contexto)} de la conciliacion #{exists.conciliacion_id}"
+            ),
+        )
+
+    row = ConciliacionManifiesto(
+        conciliacion_id=conciliacion_id,
+        manifiesto_numero=manifiesto_numero,
+        contexto=contexto,
+        liquidacion_contrato_fijo_id=liquidacion_contrato_fijo_id,
+        created_by=user.id,
+    )
+    db.add(row)
+    _mark_borrador_dirty(conc)
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conciliacion_id,
+        campo=f"manifiesto_asociado_{contexto.lower()}",
+        valor_nuevo=manifiesto_numero,
+    )
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/{conciliacion_id}/manifiestos/{manifiesto_id}")
+def delete_manifiesto(
+    conciliacion_id: int,
+    manifiesto_id: int,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede quitar manifiestos")
+
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo conciliaciones en BORRADOR permiten quitar manifiestos")
+
+    row = db.get(ConciliacionManifiesto, manifiesto_id)
+    if not row or row.conciliacion_id != conciliacion_id:
+        raise HTTPException(status_code=404, detail="Manifiesto no encontrado en esta conciliacion")
+
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conciliacion_id,
+        campo=f"manifiesto_quitado_{row.contexto.lower()}",
+        valor_anterior=row.manifiesto_numero,
+    )
+    _mark_borrador_dirty(conc)
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.patch("/{conciliacion_id}/manifiestos/{manifiesto_id}", response_model=ConciliacionManifiestoOut)
+def update_manifiesto(
+    conciliacion_id: int,
+    manifiesto_id: int,
+    payload: ConciliacionManifiestoUpdate,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede actualizar manifiestos")
+
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    if conc.estado == "BORRADOR" or conc.enviada_facturacion:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede corregir manifiestos de liquidacion desde que la descarga esta habilitada y antes de enviar a facturacion",
+        )
+
+    row = db.get(ConciliacionManifiesto, manifiesto_id)
+    if not row or row.conciliacion_id != conciliacion_id:
+        raise HTTPException(status_code=404, detail="Manifiesto no encontrado en esta conciliacion")
+    if row.contexto != MANIFIESTO_CONTEXTO_LIQUIDACION:
+        raise HTTPException(status_code=400, detail="Solo se pueden corregir manifiestos del bloque de liquidacion")
+
+    if not _is_liquidacion_manifest_mismatch(db, conciliacion_id, row.manifiesto_numero):
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede actualizar el manifiesto que no coincide con la placa de la liquidacion",
+        )
+
+    new_value = _normalize_manifiesto_for_lookup(payload.manifiesto_numero)
+    if not new_value:
+        raise HTTPException(status_code=400, detail="Debes escribir un manifiesto valido")
+
+    exists = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.manifiesto_numero == new_value,
+            ConciliacionManifiesto.id != row.id,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"El manifiesto {new_value} ya esta asociado a la "
+                f"{_contexto_label(exists.contexto)} de la conciliacion #{exists.conciliacion_id}"
+            ),
+        )
+
+    old_value = row.manifiesto_numero
+    row.manifiesto_numero = new_value
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conciliacion_id,
+        campo="manifiesto_corregido_liquidacion",
+        valor_anterior=old_value,
+        valor_nuevo=new_value,
+    )
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/items/{item_id}")
+def delete_liquidacion_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    if user.rol != UserRole.COINTRA:
+        raise HTTPException(status_code=403, detail="Solo Cointra puede eliminar registros de liquidacion")
+
+    item = db.get(ConciliacionItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+
+    conc = db.get(Conciliacion, item.conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+
+    if conc.estado != "BORRADOR":
+        raise HTTPException(status_code=400, detail="Solo en BORRADOR se pueden eliminar registros de liquidacion")
+
+    liq_meta = _extract_liquidacion_metadata(item)
+    if not liq_meta:
+        raise HTTPException(status_code=400, detail="Solo se pueden eliminar registros del bloque contrato fijo")
+
+    log_change(
+        db,
+        usuario_id=user.id,
+        conciliacion_id=conc.id,
+        item_id=item.id,
+        campo="liquidacion_contrato_fijo_eliminada",
+        valor_anterior=f"placa={item.placa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}",
+    )
+    _mark_borrador_dirty(conc)
+    db.delete(item)
+    db.commit()
+    return {"ok": True}
 
 
 @router.patch("/items/{item_id}/estado", response_model=ConciliacionItemOut)
@@ -902,14 +2500,22 @@ def patch_item(
                 detail="En APROBADA solo puedes corregir el manifiesto para enviar a facturacion",
             )
 
+    if can_edit_borrador and changed:
+        _mark_borrador_dirty(conc)
+
     operacion = db.get(Operacion, conc.operacion_id)
     _validate_user_access_operacion(user, operacion)
 
     old_manifiesto = item.manifiesto_numero
     old_remesa = item.remesa
+    old_placa = item.placa
     old_tarifa_tercero = item.tarifa_tercero
     old_tarifa_cliente = item.tarifa_cliente
     old_rentabilidad = item.rentabilidad
+
+    if "placa" in changed:
+        normalized_placa = str(payload.placa or "").strip().upper()
+        item.placa = normalized_placa or None
 
     if "manifiesto_numero" in changed:
         item.manifiesto_numero = payload.manifiesto_numero
@@ -938,19 +2544,39 @@ def patch_item(
             if item.tarifa_cliente is not None and new_pct < 100:
                 item.tarifa_tercero = float(item.tarifa_cliente) * (1 - new_pct / 100)
 
+    # Mantener viaje sincronizado con la corrección final de conciliación para evitar divergencias.
+    if item.viaje_id is not None:
+        viaje = db.get(Viaje, item.viaje_id)
+        if viaje:
+            if "placa" in changed and item.placa:
+                viaje.placa = item.placa
+            if "manifiesto_numero" in changed:
+                viaje.manifiesto_numero = item.manifiesto_numero
+            if tarifa_fields:
+                if item.tarifa_tercero is not None:
+                    viaje.tarifa_tercero = item.tarifa_tercero
+                if item.tarifa_cliente is not None:
+                    viaje.tarifa_cliente = item.tarifa_cliente
+                if item.rentabilidad is not None:
+                    viaje.rentabilidad = item.rentabilidad
+
     log_change(
         db,
         usuario_id=user.id,
         conciliacion_id=conc.id,
         item_id=item.id,
         campo="actualizacion_manual_item",
-        valor_anterior=f"manifiesto={old_manifiesto}; remesa={old_remesa}; t3={old_tarifa_tercero}; tc={old_tarifa_cliente}; rent={old_rentabilidad}",
-        valor_nuevo=f"manifiesto={item.manifiesto_numero}; remesa={item.remesa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}; rent={item.rentabilidad}",
+        valor_anterior=f"placa={old_placa}; manifiesto={old_manifiesto}; remesa={old_remesa}; t3={old_tarifa_tercero}; tc={old_tarifa_cliente}; rent={old_rentabilidad}",
+        valor_nuevo=f"placa={item.placa}; manifiesto={item.manifiesto_numero}; remesa={item.remesa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}; rent={item.rentabilidad}",
     )
 
     db.commit()
     db.refresh(item)
-    return item
+    item_payload = ConciliacionItemOut.model_validate(item).model_dump()
+    liquidacion_meta = _extract_liquidacion_metadata(item)
+    if liquidacion_meta:
+        item_payload.update(liquidacion_meta)
+    return sanitize_item_for_role(item_payload, user.rol)
 
 
 @router.patch("/items/{item_id}/decision-cliente", response_model=ConciliacionItemOut)
@@ -1014,6 +2640,12 @@ def enviar_revision(
     operacion = db.get(Operacion, conc.operacion_id)
     _validate_user_access_operacion(user, operacion)
 
+    if conc.estado == "BORRADOR" and not conc.borrador_guardado:
+        raise HTTPException(
+            status_code=400,
+            detail="Debes guardar la conciliacion antes de enviarla a revision",
+        )
+
     conc.estado = "EN_REVISION"
     conc.enviada_facturacion = False
     _sync_viajes_conciliado_por_estado(db, conc.id, conc.estado)
@@ -1028,7 +2660,7 @@ def enviar_revision(
 
     recipients = _resolve_recipients(db, operacion, [UserRole.CLIENTE])
     target_emails = _parse_target_emails(payload.destinatario_email, recipients)
-    notification_recipients = recipients
+    notification_recipients = _users_matching_emails(recipients, target_emails) or recipients
 
     if not target_emails:
         raise HTTPException(status_code=400, detail="No hay correo destinatario para enviar la conciliacion")
@@ -1239,39 +2871,75 @@ def enviar_facturacion_conciliacion(
 
     items = (
         db.query(ConciliacionItem)
-        .filter(
-            ConciliacionItem.conciliacion_id == conciliacion_id,
-            ConciliacionItem.tipo == ItemTipo.VIAJE,
-        )
+        .options(selectinload(ConciliacionItem.viaje).selectinload(Viaje.servicio))
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
         .order_by(ConciliacionItem.id.asc())
         .all()
     )
     if not items:
-        raise HTTPException(status_code=400, detail="No hay viajes para generar el archivo de facturacion")
+        raise HTTPException(status_code=400, detail="No hay registros para generar el archivo de facturacion")
 
     recipients = _resolve_recipients(db, operacion, [UserRole.COINTRA])
     target_emails = _parse_target_emails(payload.destinatario_email, recipients)
     if not target_emails:
         raise HTTPException(status_code=400, detail="No hay correos de destino para facturacion")
 
-    facturacion_rows, missing_manifiestos = _prepare_facturacion_rows(items)
-    if missing_manifiestos:
-        count = len(missing_manifiestos)
-        detail = "No se pudo generar el archivo de facturacion porque faltan datos en Avansat"
-        missing_list = ", ".join(missing_manifiestos[:12])
-        if len(missing_manifiestos) > 12:
-            missing_list = f"{missing_list}, ..."
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{detail}. "
-                f"Viajes pendientes ({count}): {missing_list}. "
-                "Completa el manifiesto de esos viajes y vuelve a intentar."
-            ),
+    manifests = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.conciliacion_id == conciliacion_id,
+            ConciliacionManifiesto.contexto == MANIFIESTO_CONTEXTO_CONCILIACION,
         )
+        .order_by(ConciliacionManifiesto.id.asc())
+        .all()
+    )
+    liquidacion_manifests = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.conciliacion_id == conciliacion_id,
+            ConciliacionManifiesto.contexto == MANIFIESTO_CONTEXTO_LIQUIDACION,
+        )
+        .order_by(ConciliacionManifiesto.id.asc())
+        .all()
+    )
+    avansat_prefetched = _prefetch_avansat_for_excel_or_raise(db, manifests, liquidacion_manifests)
+    _validate_manifests_match_plates_or_raise(
+        items,
+        liquidacion_manifests,
+        avansat_prefetched,
+        MANIFIESTO_CONTEXTO_LIQUIDACION,
+    )
+    _validate_manifests_match_plates_or_raise(
+        items,
+        manifests,
+        avansat_prefetched,
+        MANIFIESTO_CONTEXTO_CONCILIACION,
+    )
 
-    excel_content = _build_facturacion_excel(conc, facturacion_rows)
-    filename = f"conciliacion_{conc.id}_facturacion.xlsx"
+    placas = {str(item.placa or "").strip().upper() for item in items if item.placa}
+    tipo_vehiculo_by_placa: dict[str, str] = {}
+    if placas:
+        vehiculos = (
+            db.query(Vehiculo)
+            .options(selectinload(Vehiculo.tipo))
+            .filter(Vehiculo.placa.in_(list(placas)))
+            .all()
+        )
+        tipo_vehiculo_by_placa = {
+            str(v.placa or "").strip().upper(): (v.tipo.nombre if v.tipo else "")
+            for v in vehiculos
+        }
+
+    excel_content = _build_conciliacion_excel(
+        conc,
+        items,
+        manifests,
+        liquidacion_manifests,
+        user.rol,
+        tipo_vehiculo_by_placa,
+        avansat_prefetched,
+    )
+    filename = f"conciliacion_{conc.id}_resumen.xlsx"
     custom_message = payload.mensaje or ""
     email_body = (
         f"Hola,\n\n"
@@ -1322,6 +2990,90 @@ def enviar_facturacion_conciliacion(
     )
     db.commit()
     return conc
+
+
+@router.get("/{conciliacion_id}/descargar-excel")
+def descargar_conciliacion_excel(
+    conciliacion_id: int,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+    _ensure_user_can_access_conciliacion(user, conc)
+
+    items = (
+        db.query(ConciliacionItem)
+        .options(selectinload(ConciliacionItem.viaje).selectinload(Viaje.servicio))
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+        .order_by(ConciliacionItem.id.asc())
+        .all()
+    )
+    manifests = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.conciliacion_id == conciliacion_id,
+            ConciliacionManifiesto.contexto == MANIFIESTO_CONTEXTO_CONCILIACION,
+        )
+        .order_by(ConciliacionManifiesto.id.asc())
+        .all()
+    )
+    liquidacion_manifests = (
+        db.query(ConciliacionManifiesto)
+        .filter(
+            ConciliacionManifiesto.conciliacion_id == conciliacion_id,
+            ConciliacionManifiesto.contexto == MANIFIESTO_CONTEXTO_LIQUIDACION,
+        )
+        .order_by(ConciliacionManifiesto.id.asc())
+        .all()
+    )
+    avansat_prefetched = _prefetch_avansat_for_excel_or_raise(db, manifests, liquidacion_manifests)
+    _validate_manifests_match_plates_or_raise(
+        items,
+        liquidacion_manifests,
+        avansat_prefetched,
+        MANIFIESTO_CONTEXTO_LIQUIDACION,
+    )
+    _validate_manifests_match_plates_or_raise(
+        items,
+        manifests,
+        avansat_prefetched,
+        MANIFIESTO_CONTEXTO_CONCILIACION,
+    )
+
+    placas = {str(item.placa or "").strip().upper() for item in items if item.placa}
+    tipo_vehiculo_by_placa: dict[str, str] = {}
+    if placas:
+        vehiculos = (
+            db.query(Vehiculo)
+            .options(selectinload(Vehiculo.tipo))
+            .filter(Vehiculo.placa.in_(list(placas)))
+            .all()
+        )
+        tipo_vehiculo_by_placa = {
+            str(v.placa or "").strip().upper(): (v.tipo.nombre if v.tipo else "")
+            for v in vehiculos
+        }
+
+    excel_content = _build_conciliacion_excel(
+        conc,
+        items,
+        manifests,
+        liquidacion_manifests,
+        user.rol,
+        tipo_vehiculo_by_placa,
+        avansat_prefetched,
+    )
+    filename = f"conciliacion_{conc.id}_resumen.xlsx"
+    return StreamingResponse(
+        BytesIO(excel_content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{conciliacion_id}/cerrar", response_model=ConciliacionOut)
@@ -1537,6 +3289,8 @@ def attach_pending_viajes(
         )
         created_items.append(item)
 
+    _mark_borrador_dirty(conc)
+
     db.commit()
     for item in created_items:
         db.refresh(item)
@@ -1589,6 +3343,8 @@ def detach_viaje_from_conciliacion(
         campo="viaje_desadjuntado",
         valor_nuevo=f"viaje_id={viaje_id}",
     )
+
+    _mark_borrador_dirty(conc)
 
     db.commit()
     return {"ok": True}

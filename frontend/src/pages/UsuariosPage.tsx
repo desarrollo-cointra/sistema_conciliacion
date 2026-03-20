@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ActionModal } from "../components/common/ActionModal";
 import { api } from "../services/api";
-import type { Cliente, Tercero, User } from "../types";
+import type { Cliente, Operacion, Tercero, User } from "../types";
 
 interface Props {
   user: User;
@@ -13,22 +13,44 @@ export function UsuariosPage({ user }: Props) {
   const [usuarios, setUsuarios] = useState<User[]>([]);
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [terceros, setTerceros] = useState<Tercero[]>([]);
+  const [operaciones, setOperaciones] = useState<Operacion[]>([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [rolSeleccionado, setRolSeleccionado] = useState<User["rol"]>("CLIENTE");
+  const [createClienteId, setCreateClienteId] = useState<number | null>(null);
+  const [createOperacionIds, setCreateOperacionIds] = useState<number[]>([]);
   const [showPassword, setShowPassword] = useState(false);
-  const [editModal, setEditModal] = useState<{ id: number; nombre: string; email: string } | null>(null);
+  const [editModal, setEditModal] = useState<{
+    id: number;
+    nombre: string;
+    email: string;
+    rol: User["rol"];
+    cliente_id?: number | null;
+    operacion_ids: number[];
+  } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ id: number; action: "inactivar" | "reactivar" } | null>(null);
+  const clientesActivos = useMemo(() => clientes.filter((c) => c.activo), [clientes]);
+  const tercerosActivos = useMemo(() => terceros.filter((t) => t.activo), [terceros]);
 
   const clienteById = useMemo(() => new Map(clientes.map((c) => [c.id, c])), [clientes]);
   const terceroById = useMemo(() => new Map(terceros.map((t) => [t.id, t])), [terceros]);
+  const operacionesByCliente = useMemo(() => {
+    const grouped = new Map<number, Operacion[]>();
+    for (const op of operaciones) {
+      const rows = grouped.get(op.cliente_id) ?? [];
+      rows.push(op);
+      grouped.set(op.cliente_id, rows);
+    }
+    return grouped;
+  }, [operaciones]);
 
   async function loadData() {
     try {
-      const [us, cs, ts] = await Promise.all([api.usuarios(), api.clientes(), api.terceros()]);
+      const [us, cs, ts, ops] = await Promise.all([api.usuarios(), api.clientes(), api.terceros(), api.operaciones()]);
       setUsuarios(us);
       setClientes(cs);
       setTerceros(ts);
+      setOperaciones(ops);
       setError("");
     } catch (e) {
       setError((e as Error).message || "No se pudo cargar usuarios");
@@ -58,9 +80,12 @@ export function UsuariosPage({ user }: Props) {
         sub_rol: rol === "COINTRA" ? (String(form.get("sub_rol") || "COINTRA_USER") as "COINTRA_ADMIN" | "COINTRA_USER") : null,
         cliente_id: rol === "CLIENTE" ? Number(form.get("cliente_id")) : null,
         tercero_id: rol === "TERCERO" ? Number(form.get("tercero_id")) : null,
+        operacion_ids: rol === "CLIENTE" ? createOperacionIds : [],
       });
       formEl.reset();
       setRolSeleccionado("CLIENTE");
+      setCreateClienteId(null);
+      setCreateOperacionIds([]);
       setShowPassword(false);
       await loadData();
       setSuccess("Usuario creado exitosamente.");
@@ -78,6 +103,7 @@ export function UsuariosPage({ user }: Props) {
       await api.editarUsuario(editModal.id, {
         nombre: editModal.nombre.trim(),
         email: editModal.email.trim(),
+        operacion_ids: editModal.rol === "CLIENTE" ? editModal.operacion_ids : undefined,
       });
       await loadData();
       setSuccess("Usuario actualizado exitosamente.");
@@ -165,7 +191,14 @@ export function UsuariosPage({ user }: Props) {
               <select
                 name="rol"
                 value={rolSeleccionado}
-                onChange={(e) => setRolSeleccionado(e.target.value as User["rol"])}
+                onChange={(e) => {
+                  const nextRole = e.target.value as User["rol"];
+                  setRolSeleccionado(nextRole);
+                  if (nextRole !== "CLIENTE") {
+                    setCreateClienteId(null);
+                    setCreateOperacionIds([]);
+                  }
+                }}
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
               >
                 <option value="CLIENTE">CLIENTE</option>
@@ -194,13 +227,41 @@ export function UsuariosPage({ user }: Props) {
                 <select
                   name="cliente_id"
                   required
+                  value={createClienteId ? String(createClienteId) : ""}
+                  onChange={(e) => {
+                    const nextClienteId = Number(e.target.value);
+                    if (nextClienteId > 0) {
+                      setCreateClienteId(nextClienteId);
+                    } else {
+                      setCreateClienteId(null);
+                    }
+                    setCreateOperacionIds([]);
+                  }}
                   className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
                 >
                   <option value="">Seleccione...</option>
-                  {clientes.map((c) => (
+                  {clientesActivos.map((c) => (
                     <option key={c.id} value={c.id}>{c.nombre}</option>
                   ))}
                 </select>
+                <label className="mt-3 mb-1 block text-xs font-semibold uppercase tracking-wide text-neutral">Operaciones asignadas</label>
+                <select
+                  multiple
+                  value={createOperacionIds.map(String)}
+                  onChange={(e) => {
+                    const values = Array.from(e.target.selectedOptions).map((opt) => Number(opt.value));
+                    setCreateOperacionIds(values);
+                  }}
+                  disabled={!createClienteId}
+                  className="h-28 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:bg-slate-100"
+                >
+                  {(operacionesByCliente.get(createClienteId ?? -1) ?? []).map((op) => (
+                    <option key={op.id} value={op.id}>{op.nombre}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] text-neutral">
+                  Puedes seleccionar una o varias operaciones para este usuario cliente.
+                </p>
               </div>
             )}
 
@@ -213,7 +274,7 @@ export function UsuariosPage({ user }: Props) {
                   className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
                 >
                   <option value="">Seleccione...</option>
-                  {terceros.map((t) => (
+                  {tercerosActivos.map((t) => (
                     <option key={t.id} value={t.id}>{t.nombre}</option>
                   ))}
                 </select>
@@ -259,7 +320,16 @@ export function UsuariosPage({ user }: Props) {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => setEditModal({ id: u.id, nombre: u.nombre, email: u.email })}
+                          onClick={() =>
+                            setEditModal({
+                              id: u.id,
+                              nombre: u.nombre,
+                              email: u.email,
+                              rol: u.rol,
+                              cliente_id: u.cliente_id,
+                              operacion_ids: u.operacion_ids ?? [],
+                            })
+                          }
                           className="rounded-full border border-border bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                         >
                           Editar
@@ -316,6 +386,27 @@ export function UsuariosPage({ user }: Props) {
           type="email"
           className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
         />
+        {editModal?.rol === "CLIENTE" && (
+          <>
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral">Operaciones asignadas</p>
+            <select
+              multiple
+              value={editModal.operacion_ids.map(String)}
+              onChange={(e) => {
+                const values = Array.from(e.target.selectedOptions).map((opt) => Number(opt.value));
+                setEditModal((prev) => (prev ? { ...prev, operacion_ids: values } : prev));
+              }}
+              className="h-28 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+            >
+              {(operacionesByCliente.get(editModal.cliente_id ?? -1) ?? []).map((op) => (
+                <option key={op.id} value={op.id}>{op.nombre}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-neutral">
+              Puedes seleccionar múltiples operaciones para este usuario cliente.
+            </p>
+          </>
+        )}
       </ActionModal>
 
       <ActionModal

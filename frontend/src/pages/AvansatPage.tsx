@@ -1,7 +1,7 @@
-import { FormEvent, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../services/api";
-import { AvansatLookup, User } from "../types";
+import { AvansatCacheRow, User } from "../types";
 
 interface Props {
   user: User;
@@ -23,31 +23,130 @@ function toSpanishError(error: unknown): string {
 }
 
 export function AvansatPage({ user }: Props) {
-  const [manifiesto, setManifiesto] = useState("");
-  const [result, setResult] = useState<AvansatLookup | null>(null);
+  const [rows, setRows] = useState<AvansatCacheRow[]>([]);
+  const [totalRows, setTotalRows] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(100);
+  const [filters, setFilters] = useState({
+    estado: "",
+    manifiesto: "",
+    fecha_emision: "",
+    placa_vehiculo: "",
+    trayler: "",
+    remesa: "",
+    producto: "",
+    ciudad_origen: "",
+    ciudad_destino: "",
+  });
   const [loading, setLoading] = useState(false);
+  const [syncingMesAnterior, setSyncingMesAnterior] = useState(false);
+  const [syncingAyerHoy, setSyncingAyerHoy] = useState(false);
   const [error, setError] = useState("");
+  const [syncMessage, setSyncMessage] = useState("");
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const value = manifiesto.trim();
-    if (!value) {
-      setError("Debes ingresar un manifiesto");
-      return;
-    }
-
+  async function loadCache(nextPage = page, overrideFilters?: typeof filters) {
     setError("");
     setLoading(true);
     try {
-      const data = await api.consultarAvansat(value);
-      setResult(data);
+      const activeFilters = overrideFilters ?? filters;
+      const data = await api.avansatCache({
+        ...activeFilters,
+        estado: (activeFilters.estado as "SINCRONIZADO" | "") || undefined,
+        page: nextPage,
+        page_size: pageSize,
+      });
+      setRows(data.rows);
+      setTotalRows(data.total);
+      setPage(data.page);
     } catch (e) {
-      setResult(null);
       setError(toSpanishError(e));
     } finally {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    void loadCache(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadCache(1);
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
+
+  async function runSyncMesAnterior() {
+    setSyncMessage("");
+    setError("");
+    setSyncingMesAnterior(true);
+    try {
+      const result = await api.syncAvansatMesAnterior();
+      setSyncMessage(
+        `Sincronizacion completada (${result.start_date} a ${result.end_date}). Recibidos: ${result.total}, nuevos: ${result.inserted}, ya existentes: ${result.skipped}.`
+      );
+      await loadCache(1);
+    } catch (e) {
+      setError(toSpanishError(e));
+    } finally {
+      setSyncingMesAnterior(false);
+    }
+  }
+
+  async function runSyncAyerHoy() {
+    setSyncMessage("");
+    setError("");
+    setSyncingAyerHoy(true);
+    try {
+      const result = await api.syncAvansatAyerHoy();
+      setSyncMessage(
+        `Sincronizacion completada (${result.start_date} a ${result.end_date}). Recibidos: ${result.total}, nuevos: ${result.inserted}, ya existentes: ${result.skipped}.`
+      );
+      await loadCache(1);
+    } catch (e) {
+      setError(toSpanishError(e));
+    } finally {
+      setSyncingAyerHoy(false);
+    }
+  }
+
+  function formatColombiaDateTime(value: string | null): string {
+    if (!value) return "-";
+    const normalized = value.endsWith("Z") ? value : `${value}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("es-CO", {
+      timeZone: "America/Bogota",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(date);
+  }
+
+  function clearFilters() {
+    const emptyFilters = {
+      estado: "",
+      manifiesto: "",
+      fecha_emision: "",
+      placa_vehiculo: "",
+      trayler: "",
+      remesa: "",
+      producto: "",
+      ciudad_origen: "",
+      ciudad_destino: "",
+    };
+    setFilters(emptyFilters);
+    setPage(1);
+    void loadCache(1, emptyFilters);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
 
   if (user.rol !== "COINTRA") {
     return (
@@ -61,73 +160,160 @@ export function AvansatPage({ user }: Props) {
     <div className="space-y-6">
       <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Avansat</p>
-        <h2 className="mt-1 text-2xl font-bold text-slate-900">Consulta por manifiesto</h2>
+        <h2 className="mt-1 text-2xl font-bold text-slate-900">Consulta Avansat (cache interna)</h2>
         <p className="mt-2 text-sm text-neutral">
-          Ingresa el manifiesto para ver los datos que retorna la API de Avansat.
+          Esta tabla muestra la informacion guardada en la tabla manifiestos_avansat de la base de datos.
         </p>
 
-        <form className="mt-4 grid gap-3 md:grid-cols-[minmax(260px,1fr),auto]" onSubmit={onSubmit}>
-          <input
-            value={manifiesto}
-            onChange={(e) => setManifiesto(e.target.value)}
-            placeholder="Ej: 012345"
-            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
-          />
+        <div className="mt-4 flex flex-wrap gap-3">
+          {user.sub_rol === "COINTRA_ADMIN" && (
+            <button
+              type="button"
+              onClick={() => void runSyncMesAnterior()}
+              disabled={syncingMesAnterior || syncingAyerHoy}
+              className="rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition enabled:hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {syncingMesAnterior ? "Sincronizando..." : "Sincronizar desde el mes anterior..."}
+            </button>
+          )}
           <button
-            type="submit"
-            disabled={loading}
+            type="button"
+            onClick={() => void runSyncAyerHoy()}
+            disabled={syncingMesAnterior || syncingAyerHoy}
             className="rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition enabled:hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            {loading ? "Consultando..." : "Consultar"}
+            {syncingAyerHoy ? "Sincronizando..." : "Sincronizar ayer y hoy..."}
           </button>
-        </form>
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            Borrar filtros
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadCache()}
+            className="rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            Recargar
+          </button>
+        </div>
 
         {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
+        {syncMessage && <p className="mt-3 text-sm font-medium text-emerald-700">{syncMessage}</p>}
       </section>
 
-      {result && (
-        <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-lg font-bold text-slate-900">Resultado: manifiesto {result.manifiesto}</h3>
-            <span
-              className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                result.encontrado
-                  ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
-                  : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"
-              }`}
-            >
-              {result.encontrado ? "Encontrado" : "Sin datos en Avansat"}
-            </span>
-          </div>
+      <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-lg font-bold text-slate-900">Manifiestos almacenados</h3>
+          <span className="text-xs font-semibold text-neutral">Mostrando {rows.length} de {totalRows}</span>
+        </div>
 
-          <div className="mt-4 overflow-x-auto">
-            <table className="min-w-full border-collapse text-sm">
-              <thead>
-                <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
-                  <th className="border-b border-border px-3 py-2 text-left">Campo</th>
-                  <th className="border-b border-border px-3 py-2 text-left">Valor</th>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void loadCache(1)}
+            className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            Aplicar filtros
+          </button>
+          <span className="text-xs text-neutral">Pagina {page} de {totalPages}</span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-[1200px] border-collapse text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
+                <th className="border-b border-border px-3 py-2 text-left">Estado</th>
+                <th className="border-b border-border px-3 py-2 text-left">Manifiesto</th>
+                <th className="border-b border-border px-3 py-2 text-left">Fecha Emision</th>
+                <th className="border-b border-border px-3 py-2 text-left">Placa</th>
+                <th className="border-b border-border px-3 py-2 text-left">Trayler</th>
+                <th className="border-b border-border px-3 py-2 text-left">Remesa</th>
+                <th className="border-b border-border px-3 py-2 text-left">Producto</th>
+                <th className="border-b border-border px-3 py-2 text-left">Ciudad Origen</th>
+                <th className="border-b border-border px-3 py-2 text-left">Ciudad Destino</th>
+                <th className="border-b border-border px-3 py-2 text-left">Ultima sync</th>
+              </tr>
+              <tr className="bg-white">
+                <th className="border-b border-border px-2 py-2">
+                  <select
+                    value={filters.estado}
+                    onChange={(e) => {
+                      setPage(1);
+                      setFilters((prev) => ({ ...prev, estado: e.target.value }));
+                    }}
+                    className="w-full rounded border border-border px-2 py-1 text-xs"
+                  >
+                    <option value="">Todos</option>
+                    <option value="SINCRONIZADO">SINCRONIZADO</option>
+                  </select>
+                </th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.manifiesto} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, manifiesto: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.fecha_emision} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, fecha_emision: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.placa_vehiculo} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, placa_vehiculo: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.trayler} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, trayler: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.remesa} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, remesa: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.producto} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, producto: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.ciudad_origen} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, ciudad_origen: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.ciudad_destino} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, ciudad_destino: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-3 py-2 text-xs text-neutral">-</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && rows.map((row) => (
+                <tr key={row.manifiesto_numero} className="border-b border-border last:border-0">
+                  <td className="px-3 py-2 text-slate-700">
+                    <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                      {row.estado}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-semibold text-slate-800">{row.manifiesto_numero}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.fecha_emision || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.placa_vehiculo || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.trayler || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.remesa || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.producto || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.ciudad_origen || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.ciudad_destino || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">{formatColombiaDateTime(row.created_at)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {[
-                  ["Fecha emisión", result.fecha_emision],
-                  ["Producto", result.producto],
-                  ["Placa vehículo", result.placa_vehiculo],
-                  ["Trayler", result.trayler],
-                  ["Remesa", result.remesa],
-                  ["Ciudad origen", result.ciudad_origen],
-                  ["Ciudad destino", result.ciudad_destino],
-                ].map(([label, value]) => (
-                  <tr key={label} className="border-b border-border last:border-0">
-                    <td className="px-3 py-2 font-semibold text-slate-800">{label}</td>
-                    <td className="px-3 py-2 text-slate-700">{value || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+              ))}
+              {loading && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-6 text-center text-sm text-neutral">Cargando datos de cache...</td>
+                </tr>
+              )}
+              {!loading && rows.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-6 text-center text-sm text-neutral">No hay manifiestos para los filtros seleccionados.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            disabled={page <= 1 || loading}
+            onClick={() => void loadCache(page - 1)}
+            className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Anterior
+          </button>
+          <span className="text-xs text-neutral">Total: {totalRows} registros</span>
+          <button
+            type="button"
+            disabled={page >= totalPages || loading}
+            onClick={() => void loadCache(page + 1)}
+            className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Siguiente
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

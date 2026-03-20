@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     avansat_user: str = ""
     avansat_pass: str = ""
     avansat_verify_ssl: bool = False
+    avansat_timeout_seconds: int = 0
+    avansat_cache_ttl_seconds: int = 600
+    avansat_max_workers: int = 8
+    avansat_db_cache_max_age_minutes: int = 180
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

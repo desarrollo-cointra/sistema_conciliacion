@@ -1,4 +1,4 @@
-import { AvansatLookup, Cliente, Conciliacion, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { AvansatCacheListResult, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, ConciliacionManifiesto, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
 
@@ -40,6 +40,7 @@ export const api = {
     sub_rol?: "COINTRA_ADMIN" | "COINTRA_USER" | null;
     cliente_id?: number | null;
     tercero_id?: number | null;
+    operacion_ids?: number[];
   }) =>
     request<User>("/catalogs/usuarios", {
       method: "POST",
@@ -84,11 +85,13 @@ export const api = {
       method: "POST",
     }),
   operaciones: () => request<Operacion[]>("/catalogs/operaciones"),
+  clienteUsuarios: (clienteId: number) => request<User[]>(`/catalogs/clientes/${clienteId}/usuarios-cliente`),
   crearOperacion: (payload: {
     cliente_id: number;
     tercero_id: number;
     nombre: string;
     porcentaje_rentabilidad: number;
+    cliente_usuario_ids?: number[];
   }) =>
     request<Operacion>("/catalogs/operaciones", {
       method: "POST",
@@ -96,7 +99,13 @@ export const api = {
     }),
   editarOperacion: (
     id: number,
-    payload: { cliente_id?: number; tercero_id?: number; nombre?: string; porcentaje_rentabilidad?: number }
+    payload: {
+      cliente_id?: number;
+      tercero_id?: number;
+      nombre?: string;
+      porcentaje_rentabilidad?: number;
+      cliente_usuario_ids?: number[];
+    }
   ) =>
     request<Operacion>(`/catalogs/operaciones/${id}`, {
       method: "PATCH",
@@ -163,13 +172,15 @@ export const api = {
   },
   crearViaje: (payload: {
     operacion_id: number;
+    servicio_id?: number;
     titulo: string;
     fecha_servicio: string;
-    origen: string;
-    destino: string;
+    origen?: string;
+    destino?: string;
     placa: string;
+    hora_inicio?: string;
     conductor?: string;
-    tarifa_tercero: number;
+    tarifa_tercero?: number;
     tarifa_cliente?: number;
     manifiesto_numero?: string;
     descripcion?: string;
@@ -216,6 +227,59 @@ export const api = {
     request<{ ok: boolean }>(`/conciliaciones/${conciliacionId}/viajes/${viajeId}`, {
       method: "DELETE",
     }),
+  crearLiquidacionContratoFijo: (
+    conciliacionId: number,
+    payload: {
+      liquidacion_id?: number | null;
+      periodo_inicio: string;
+      periodo_fin: string;
+      placas: string[];
+      valor_tercero: number;
+      incluir_conductor_relevo: boolean;
+      relevo_con_valor: boolean;
+      valor_tercero_relevo?: number | null;
+    }
+  ) =>
+    request<Item[]>(`/conciliaciones/${conciliacionId}/liquidacion-contrato-fijo`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  eliminarRegistroLiquidacionContratoFijo: (itemId: number) =>
+    request<{ ok: boolean }>(`/conciliaciones/items/${itemId}`, {
+      method: "DELETE",
+    }),
+  manifiestosConciliacion: (
+    conciliacionId: number,
+    contexto: "CONCILIACION" | "LIQUIDACION_CONTRATO_FIJO" = "CONCILIACION",
+    liquidacionContratoFijoId?: number
+  ) =>
+    request<ConciliacionManifiesto[]>(`/conciliaciones/${conciliacionId}/manifiestos?${new URLSearchParams({
+      contexto,
+      ...(liquidacionContratoFijoId ? { liquidacion_contrato_fijo_id: String(liquidacionContratoFijoId) } : {}),
+    }).toString()}`),
+  asociarManifiestoConciliacion: (
+    conciliacionId: number,
+    manifiesto_numero: string,
+    contexto: "CONCILIACION" | "LIQUIDACION_CONTRATO_FIJO" = "CONCILIACION",
+    liquidacion_contrato_fijo_id?: number
+  ) =>
+    request<ConciliacionManifiesto>(`/conciliaciones/${conciliacionId}/manifiestos`, {
+      method: "POST",
+      body: JSON.stringify({ manifiesto_numero, contexto, liquidacion_contrato_fijo_id }),
+    }),
+  quitarManifiestoConciliacion: (conciliacionId: number, manifiestoId: number) =>
+    request<{ ok: boolean }>(`/conciliaciones/${conciliacionId}/manifiestos/${manifiestoId}`, {
+      method: "DELETE",
+    }),
+  actualizarManifiestoConciliacion: (
+    conciliacionId: number,
+    manifiestoId: number,
+    manifiesto_numero: string
+  ) =>
+    request<ConciliacionManifiesto>(`/conciliaciones/${conciliacionId}/manifiestos/${manifiestoId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ manifiesto_numero }),
+    }),
   enviarRevisionConciliacion: (
     conciliacionId: number,
     payload: { observacion?: string; destinatario_email?: string; mensaje?: string }
@@ -223,6 +287,10 @@ export const api = {
     request<Conciliacion>(`/conciliaciones/${conciliacionId}/enviar-revision`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  guardarConciliacionBorrador: (conciliacionId: number) =>
+    request<Conciliacion>(`/conciliaciones/${conciliacionId}/guardar-borrador`, {
+      method: "POST",
     }),
   decidirItemCliente: (
     itemId: number,
@@ -256,6 +324,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  descargarConciliacionExcel: async (conciliacionId: number): Promise<Blob> => {
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/conciliaciones/${conciliacionId}/descargar-excel`, {
+      method: "GET",
+      headers,
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || "Error en la descarga de conciliacion");
+    }
+    return response.blob();
+  },
   misNotificaciones: (soloNoLeidas = true) =>
     request<Notificacion[]>(`/notificaciones/mis?solo_no_leidas=${soloNoLeidas ? "true" : "false"}`),
   marcarNotificacionLeida: (id: number) =>
@@ -283,6 +365,7 @@ export const api = {
       sub_rol?: "COINTRA_ADMIN" | "COINTRA_USER" | null;
       cliente_id?: number | null;
       tercero_id?: number | null;
+      operacion_ids?: number[];
     }
   ) =>
     request<User>(`/catalogs/usuarios/${id}`, {
@@ -306,6 +389,7 @@ export const api = {
   patchConciliacionItem: (
     itemId: number,
     payload: {
+      placa?: string | null;
       manifiesto_numero?: string | null;
       remesa?: string | null;
       tarifa_tercero?: number | null;
@@ -341,4 +425,84 @@ export const api = {
     }),
   consultarAvansat: (manifiesto: string) =>
     request<AvansatLookup>(`/avansat/manifiesto/${encodeURIComponent(manifiesto.trim())}`),
+  avansatCache: (params?: {
+    manifiesto?: string;
+    fecha_emision?: string;
+    placa_vehiculo?: string;
+    trayler?: string;
+    remesa?: string;
+    producto?: string;
+    ciudad_origen?: string;
+    ciudad_destino?: string;
+    estado?: "SINCRONIZADO";
+    page?: number;
+    page_size?: number;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.manifiesto) search.set("manifiesto", params.manifiesto);
+    if (params?.fecha_emision) search.set("fecha_emision", params.fecha_emision);
+    if (params?.placa_vehiculo) search.set("placa_vehiculo", params.placa_vehiculo);
+    if (params?.trayler) search.set("trayler", params.trayler);
+    if (params?.remesa) search.set("remesa", params.remesa);
+    if (params?.producto) search.set("producto", params.producto);
+    if (params?.ciudad_origen) search.set("ciudad_origen", params.ciudad_origen);
+    if (params?.ciudad_destino) search.set("ciudad_destino", params.ciudad_destino);
+    if (params?.estado) search.set("estado", params.estado);
+    if (params?.page) search.set("page", String(params.page));
+    if (params?.page_size) search.set("page_size", String(params.page_size));
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<AvansatCacheListResult>(`/avansat/cache${suffix}`);
+  },
+  syncAvansatCache: (daysBack = 60, maxAgeMinutes = 30) =>
+    request<AvansatSyncResult>(`/avansat/sync-cache?days_back=${daysBack}&max_age_minutes=${maxAgeMinutes}`, {
+      method: "POST",
+    }),
+  syncAvansatMesAnterior: () =>
+    request<AvansatSyncResult>("/avansat/sync-mes-anterior", {
+      method: "POST",
+    }),
+  syncAvansatAyerHoy: () =>
+    request<AvansatSyncResult>("/avansat/sync-ayer-hoy", {
+      method: "POST",
+    }),
+  servicios: () => request<Servicio[]>("/servicios"),
+  crearServicio: (payload: { nombre: string; requiere_origen_destino?: boolean }) =>
+    request<Servicio>("/servicios", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  editarServicio: (id: number, payload: { nombre?: string; requiere_origen_destino?: boolean }) =>
+    request<Servicio>(`/servicios/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  inactivarServicio: (id: number) =>
+    request<{ ok: boolean }>(`/servicios/${id}`, {
+      method: "DELETE",
+    }),
+  reactivarServicio: (id: number) =>
+    request<{ ok: boolean }>(`/servicios/${id}/reactivar`, {
+      method: "POST",
+    }),
+  catalogoTarifas: () => request<CatalogoTarifa[]>("/catalogo-tarifas"),
+  upsertCatalogoTarifa: (payload: {
+    servicio_id: number;
+    tipo_vehiculo_id: number;
+    tarifa_cliente: number;
+    rentabilidad_pct: number;
+  }) =>
+    request<CatalogoTarifa>("/catalogo-tarifas", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  inactivarCatalogoTarifa: (id: number) =>
+    request<{ ok: boolean }>(`/catalogo-tarifas/${id}`, {
+      method: "DELETE",
+    }),
+  reactivarCatalogoTarifa: (id: number) =>
+    request<{ ok: boolean }>(`/catalogo-tarifas/${id}/reactivar`, {
+      method: "POST",
+    }),
+  lookupTarifaCatalogo: (servicioId: number, tipoVehiculoId: number) =>
+    request<TarifaLookup>(`/catalogo-tarifas/lookup?servicio_id=${servicioId}&tipo_vehiculo_id=${tipoVehiculoId}`),
 };

@@ -10,6 +10,7 @@ export interface User {
   sub_rol?: CointraSubRol | null;
   cliente_id?: number | null;
   tercero_id?: number | null;
+  operacion_ids?: number[];
   activo: boolean;
 }
 
@@ -24,6 +25,7 @@ export interface Operacion {
   tercero_id: number;
   nombre: string;
   porcentaje_rentabilidad: number;
+  cliente_usuario_ids?: number[];
   activa: boolean;
 }
 
@@ -49,6 +51,7 @@ export interface Conciliacion {
   fecha_fin: string;
   estado: "BORRADOR" | "EN_REVISION" | "APROBADA" | "CERRADA";
   activo: boolean;
+  borrador_guardado: boolean;
   enviada_facturacion: boolean;
   created_by: number;
   created_at: string;
@@ -59,11 +62,21 @@ export interface Conciliacion {
   estado_actualizado_por_email?: string | null;
 }
 
+export interface ConciliacionManifiesto {
+  id: number;
+  conciliacion_id: number;
+  manifiesto_numero: string;
+  contexto: "CONCILIACION" | "LIQUIDACION_CONTRATO_FIJO";
+  liquidacion_contrato_fijo_id?: number | null;
+  created_by: number;
+  created_at: string;
+}
+
 export interface Item {
   id: number;
   conciliacion_id: number;
   viaje_id?: number | null;
-  tipo: "VIAJE" | "PEAJE" | "HORA_EXTRA" | "VIAJE_EXTRA" | "ESTIBADA" | "CONDUCTOR_RELEVO" | "OTRO";
+  tipo: "VIAJE" | "PEAJE" | "HORA_EXTRA" | "VIAJE_ADICIONAL" | "ESTIBADA" | "CONDUCTOR_RELEVO" | "OTRO";
   estado: "PENDIENTE" | "EN_REVISION" | "APROBADO" | "RECHAZADO";
   fecha_servicio: string;
   origen: string | null;
@@ -77,6 +90,15 @@ export interface Item {
   remesa: string | null;
   cargado_por: string;
   descripcion: string | null;
+  servicio_nombre?: string | null;
+  servicio_codigo?: string | null;
+  horas_cantidad?: number | null;
+  liquidacion_contrato_fijo?: boolean;
+  liquidacion_contrato_fijo_id?: number | null;
+  liquidacion_periodo_inicio?: string | null;
+  liquidacion_periodo_fin?: string | null;
+  liquidacion_es_relevo?: boolean;
+  liquidacion_relevo_con_valor?: boolean | null;
   created_by: number;
   created_at: string;
 }
@@ -85,12 +107,16 @@ export interface Viaje {
   id: number;
   operacion_id: number;
   tercero_id: number;
+  servicio_id?: number | null;
   conciliacion_id?: number | null;
   titulo: string;
   fecha_servicio: string;
   origen: string;
   destino: string;
   placa: string;
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
+  horas_cantidad?: number | null;
   conductor: string | null;
   tarifa_tercero: number | null;
   tarifa_cliente: number | null;
@@ -100,9 +126,44 @@ export interface Viaje {
   cargado_por: string;
   conciliado: boolean;
   estado_conciliacion?: "BORRADOR" | "EN_REVISION" | "APROBADA" | "CERRADA" | null;
+  servicio_nombre?: string | null;
+  servicio_codigo?: string | null;
   activo: boolean;
   created_by: number;
   created_at: string;
+}
+
+export interface Servicio {
+  id: number;
+  nombre: string;
+  codigo: string;
+  requiere_origen_destino: boolean;
+  activo: boolean;
+  created_by: number;
+}
+
+export interface CatalogoTarifa {
+  id: number;
+  servicio_id: number;
+  tipo_vehiculo_id: number;
+  tarifa_cliente: number;
+  rentabilidad_pct: number;
+  tarifa_tercero: number;
+  activo: boolean;
+  updated_by: number;
+  servicio_nombre?: string | null;
+  servicio_codigo?: string | null;
+  tipo_vehiculo_nombre?: string | null;
+}
+
+export interface TarifaLookup {
+  tarifa: number;
+  tarifa_cliente?: number;
+  tarifa_tercero?: number;
+  rentabilidad_pct?: number;
+  ganancia_cointra?: number;
+  servicio_id: number;
+  tipo_vehiculo_id: number;
 }
 
 export interface TipoVehiculo {
@@ -152,4 +213,32 @@ export interface AvansatLookup {
   remesa: string | null;
   ciudad_origen: string | null;
   ciudad_destino: string | null;
+}
+
+export interface AvansatCacheRow {
+  manifiesto_numero: string;
+  estado: "SINCRONIZADO";
+  fecha_emision: string | null;
+  placa_vehiculo: string | null;
+  trayler: string | null;
+  remesa: string | null;
+  producto: string | null;
+  ciudad_origen: string | null;
+  ciudad_destino: string | null;
+  created_at: string | null;
+}
+
+export interface AvansatCacheListResult {
+  total: number;
+  page: number;
+  page_size: number;
+  rows: AvansatCacheRow[];
+}
+
+export interface AvansatSyncResult {
+  total: number;
+  inserted: number;
+  skipped: number;
+  start_date: string;
+  end_date: string;
 }

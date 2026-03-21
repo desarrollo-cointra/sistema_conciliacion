@@ -6,6 +6,7 @@ from sqlalchemy import desc
 from app.api.deps import get_current_user, is_cointra_admin
 from app.core.config import settings
 from app.db.session import get_db
+from app.models.conciliacion_manifiesto import ConciliacionManifiesto
 from app.models.manifiesto_avansat import ManifiestoAvansat
 from app.models.enums import UserRole
 from app.models.usuario import Usuario
@@ -42,6 +43,8 @@ class AvansatCacheStatsOut(BaseModel):
 class AvansatCacheRowOut(BaseModel):
     manifiesto_numero: str
     estado: str = "SINCRONIZADO"
+    conciliacion_id: int | None = None
+    conciliacion_contexto: str | None = None
     fecha_emision: str | None = None
     placa_vehiculo: str | None = None
     trayler: str | None = None
@@ -146,6 +149,7 @@ def avansat_cache_list(
     ciudad_origen: str | None = Query(default=None),
     ciudad_destino: str | None = Query(default=None),
     estado: str | None = Query(default=None),
+    conciliacion_id: int | None = Query(default=None, ge=1),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=10, le=500),
     db: Session = Depends(get_db),
@@ -159,6 +163,11 @@ def avansat_cache_list(
         return AvansatCacheListOut(total=0, page=page, page_size=page_size, rows=[])
 
     query = db.query(ManifiestoAvansat)
+    if conciliacion_id is not None:
+        query = query.join(
+            ConciliacionManifiesto,
+            ConciliacionManifiesto.manifiesto_numero == ManifiestoAvansat.manifiesto_numero,
+        ).filter(ConciliacionManifiesto.conciliacion_id == conciliacion_id)
     if manifiesto:
         query = query.filter(ManifiestoAvansat.manifiesto_numero.contains(manifiesto.strip()))
     if fecha_emision:
@@ -185,10 +194,24 @@ def avansat_cache_list(
         .limit(page_size)
         .all()
     )
+
+    manifest_numbers = [row.manifiesto_numero for row in rows]
+    conciliacion_by_manifest: dict[str, tuple[int, str]] = {}
+    if manifest_numbers:
+        links = (
+            db.query(ConciliacionManifiesto)
+            .filter(ConciliacionManifiesto.manifiesto_numero.in_(manifest_numbers))
+            .all()
+        )
+        for link in links:
+            conciliacion_by_manifest[link.manifiesto_numero] = (link.conciliacion_id, link.contexto)
+
     payload_rows = [
         AvansatCacheRowOut(
             manifiesto_numero=row.manifiesto_numero,
             estado="SINCRONIZADO",
+            conciliacion_id=(conciliacion_by_manifest.get(row.manifiesto_numero) or (None, None))[0],
+            conciliacion_contexto=(conciliacion_by_manifest.get(row.manifiesto_numero) or (None, None))[1],
             fecha_emision=row.fecha_emision,
             placa_vehiculo=row.placa_vehiculo,
             trayler=row.trayler,

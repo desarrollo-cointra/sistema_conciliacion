@@ -1,4 +1,4 @@
-import { AuthMessage, AvansatCacheListResult, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, ConciliacionManifiesto, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { AuthMessage, AvansatCacheListResult, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, ConciliacionManifiesto, DashboardIndicators, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
 
@@ -484,8 +484,9 @@ export const api = {
     ciudad_origen?: string;
     ciudad_destino?: string;
     estado?: "SINCRONIZADO";
-    page?: number;
-    page_size?: number;
+     conciliacion_id?: number;
+     page?: number;
+     page_size?: number;
   }) => {
     const search = new URLSearchParams();
     if (params?.manifiesto) search.set("manifiesto", params.manifiesto);
@@ -497,6 +498,7 @@ export const api = {
     if (params?.ciudad_origen) search.set("ciudad_origen", params.ciudad_origen);
     if (params?.ciudad_destino) search.set("ciudad_destino", params.ciudad_destino);
     if (params?.estado) search.set("estado", params.estado);
+    if (typeof params?.conciliacion_id === "number") search.set("conciliacion_id", String(params.conciliacion_id));
     if (params?.page) search.set("page", String(params.page));
     if (params?.page_size) search.set("page_size", String(params.page_size));
     const suffix = search.toString() ? `?${search.toString()}` : "";
@@ -514,6 +516,18 @@ export const api = {
     request<AvansatSyncResult>("/avansat/sync-ayer-hoy", {
       method: "POST",
     }),
+  dashboardIndicadores: (params?: {
+    mode?: "current_month" | "year_to_date" | "month_year";
+    year?: number;
+    month?: number;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.mode) search.set("mode", params.mode);
+    if (typeof params?.year === "number") search.set("year", String(params.year));
+    if (typeof params?.month === "number") search.set("month", String(params.month));
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<DashboardIndicators>(`/dashboard/indicadores${suffix}`);
+  },
   servicios: () => request<Servicio[]>("/servicios"),
   crearServicio: (payload: { nombre: string; requiere_origen_destino?: boolean }) =>
     request<Servicio>("/servicios", {
@@ -542,6 +556,20 @@ export const api = {
   }) =>
     request<CatalogoTarifa>("/catalogo-tarifas", {
       method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  editarCatalogoTarifa: (
+    id: number,
+    payload: {
+      servicio_id?: number;
+      tipo_vehiculo_id?: number;
+      tarifa_cliente?: number;
+      rentabilidad_pct?: number;
+      activo?: boolean;
+    }
+  ) =>
+    request<CatalogoTarifa>(`/catalogo-tarifas/${id}`, {
+      method: "PATCH",
       body: JSON.stringify(payload),
     }),
   inactivarCatalogoTarifa: (id: number) =>

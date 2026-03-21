@@ -29,6 +29,14 @@ class CatalogoTarifaUpsert(BaseModel):
     rentabilidad_pct: float = Field(ge=0, le=99.99)
 
 
+class CatalogoTarifaUpdate(BaseModel):
+    servicio_id: int | None = None
+    tipo_vehiculo_id: int | None = None
+    tarifa_cliente: float | None = Field(default=None, gt=0)
+    rentabilidad_pct: float | None = Field(default=None, ge=0, le=99.99)
+    activo: bool | None = None
+
+
 class CatalogoTarifaOut(ORMModel):
     id: int
     servicio_id: int

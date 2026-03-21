@@ -6,6 +6,13 @@ import { api } from "../services/api";
 import { Conciliacion, ConciliacionManifiesto, Item, Operacion, Servicio, TarifaLookup, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 import { formatCOP } from "../utils/formatters";
 
+function formatMoney(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  return `$ ${formatCOP(value)}`;
+}
+
 function toSpanishError(error: unknown): string {
   const message = (error as Error)?.message || "";
   if (!message) return "Ocurrio un error inesperado";
@@ -309,8 +316,14 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
     if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
     const start = h * 60 + m;
     const cut = 6 * 60;
-    if (start >= cut) return 0;
-    return Number(((cut - start) / 60).toFixed(2));
+    let minutes = (cut - start) % (24 * 60);
+    if (minutes < 0) {
+      minutes += 24 * 60;
+    }
+    if (minutes === 0) {
+      minutes = 24 * 60;
+    }
+    return Number((minutes / 60).toFixed(2));
   }, [isServicioHoraExtra, viajeForm.hora_inicio]);
   const tarifaHoraTercero = tarifaLookup?.tarifa_tercero ?? Number(viajeForm.tarifa_tercero || 0);
   const tarifaHoraCliente = tarifaLookup?.tarifa_cliente ?? Number(viajeForm.tarifa_cliente || 0);
@@ -747,11 +760,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       return;
     }
 
-    if (isServicioHoraExtra && horasExtraCalculadas <= 0) {
-      setError("La hora inicio debe ser menor a las 06:00 para calcular cobro de Hora Extra.");
-      return;
-    }
-
     if (servicioRequiereOrigenDestino && (!viajeForm.origen.trim() || !viajeForm.destino.trim())) {
       setError("Debes completar origen y destino para este tipo de servicio.");
       return;
@@ -1036,7 +1044,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       await onRefreshConciliaciones();
     } catch (e) {
       const detail = toSpanishError(e);
-      setError(detail);
       setLiquidacionManifiestoError(detail);
       liquidacionManifiestoInputRef.current?.focus();
     } finally {
@@ -1061,7 +1068,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       await onRefreshConciliaciones();
     } catch (e) {
       const detail = toSpanishError(e);
-      setError(detail);
       setConciliacionManifiestoError(detail);
       conciliacionManifiestoInputRef.current?.focus();
     } finally {
@@ -1384,7 +1390,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         <>
           <div className="grid gap-6">
             {user.rol !== "CLIENTE" && (
-            <section className="rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
+            <section className="min-w-0 rounded-2xl border border-border bg-white/90 p-5 shadow-sm">
               <h3 className="mb-4 text-sm font-semibold text-slate-900">Cargar viaje/adicional</h3>
               <form
                 onSubmit={async (e: FormEvent<HTMLFormElement>) => {
@@ -1591,11 +1597,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                             )}
                           </p>
                         )}
-                        {viajeForm.hora_inicio && horasExtraCalculadas <= 0 && (
-                          <p className="mt-1 text-xs font-medium text-danger">
-                            La hora inicio debe ser menor a las 06:00 para generar cobro de horas extra.
-                          </p>
-                        )}
                       </div>
                     </>
                   )}
@@ -1648,7 +1649,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                             {user.rol === "TERCERO" && <>Tarifa tercero: {formatCOP(tarifaLookup.tarifa_tercero ?? tarifaLookup.tarifa)}</>}
                             {user.rol === "COINTRA" && (
                               <>
-                                Tarifa cliente: {formatCOP(tarifaLookup.tarifa_cliente ?? tarifaLookup.tarifa)} · Tarifa tercero: {formatCOP(tarifaLookup.tarifa_tercero ?? 0)} · Rentabilidad: {(tarifaLookup.rentabilidad_pct ?? 0).toFixed(2)}%
+                                Tarifa cliente: {formatMoney(tarifaLookup.tarifa_cliente ?? tarifaLookup.tarifa)} · Tarifa tercero: {formatMoney(tarifaLookup.tarifa_tercero ?? 0)} · Rentabilidad: {(tarifaLookup.rentabilidad_pct ?? 0).toFixed(1)}%
                               </>
                             )}
                           </>
@@ -1729,33 +1730,33 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                   </button>
                 </div>
               </div>
-              <div className="overflow-hidden">
-                <table className="w-full table-fixed border-collapse text-[13px] [&_th]:align-top [&_td]:align-top">
+              <div className="overflow-x-auto">
+                <table className="min-w-[1320px] border-collapse text-[13px] [&_th]:align-top [&_td]:align-top">
                   <thead>
                     <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
-                      <th className="w-[4%] border-b border-border px-3 py-2 text-left">ID</th>
-                      <th className="w-[7%] border-b border-border px-3 py-2 text-left">Fecha</th>
-                      <th className="w-[11%] border-b border-border px-3 py-2 text-left">Título</th>
-                      <th className="w-[8%] border-b border-border px-3 py-2 text-left">Servicio</th>
-                      <th className="w-[10%] border-b border-border px-3 py-2 text-left">Operación</th>
-                      <th className="w-[13%] border-b border-border px-3 py-2 text-left">Ruta</th>
-                      <th className="w-[6%] border-b border-border px-3 py-2 text-left">Placa</th>
-                      <th className="w-[7%] border-b border-border px-3 py-2 text-left">Estado</th>
+                      <th className="w-[3%] border-b border-border px-2 py-2 text-left">ID</th>
+                      <th className="w-[6%] border-b border-border px-2 py-2 text-left">Fecha</th>
+                      <th className="w-[9%] border-b border-border px-2 py-2 text-left">Título</th>
+                      <th className="w-[7%] border-b border-border px-2 py-2 text-left">Servicio</th>
+                      <th className="w-[8%] border-b border-border px-2 py-2 text-left">Operación</th>
+                      <th className="w-[10%] border-b border-border px-2 py-2 text-left">Ruta</th>
+                      <th className="w-[5%] border-b border-border px-2 py-2 text-left">Placa</th>
+                      <th className="w-[6%] border-b border-border px-2 py-2 text-left">Estado</th>
                       {isCointraAdmin && (
-                        <th className="w-[5%] border-b border-border px-3 py-2 text-left">Activo</th>
+                        <th className="w-[4%] border-b border-border px-2 py-2 text-left">Activo</th>
                       )}
-                      <th className="w-[11%] border-b border-border px-3 py-2 text-left">Conciliación</th>
+                      <th className="w-[9%] border-b border-border px-2 py-2 text-left">Conciliación</th>
                       {user.rol !== "CLIENTE" && (
-                        <th className="w-[7%] border-b border-border px-3 py-2 text-left">Tarifa Tercero</th>
+                        <th className="w-[6%] border-b border-border px-2 py-2 text-left">Tarifa Tercero</th>
                       )}
                       {user.rol !== "TERCERO" && (
-                        <th className="w-[7%] border-b border-border px-3 py-2 text-left">Tarifa Cliente</th>
+                        <th className="w-[6%] border-b border-border px-2 py-2 text-left">Tarifa Cliente</th>
                       )}
                       {user.rol === "COINTRA" && (
-                        <th className="w-[7%] border-b border-border px-3 py-2 text-left">Ganancia Cointra</th>
+                        <th className="w-[6%] border-b border-border px-2 py-2 text-left">Ganancia Cointra</th>
                       )}
                       {isCointraAdmin && (
-                        <th className="w-[10%] border-b border-border px-3 py-2 text-left">Acciones</th>
+                        <th className="w-[8%] border-b border-border px-2 py-2 text-left">Acciones</th>
                       )}
                     </tr>
                     <tr className="bg-white text-xs text-slate-600">
@@ -1847,24 +1848,26 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                 : "bg-slate-100 text-slate-600";
                           return (
                             <>
-                        <td className="px-3 py-2 break-words">{v.id}</td>
-                        <td className="px-3 py-2 break-words">{v.fecha_servicio}</td>
-                        <td className="px-3 py-2 break-words">{v.titulo}</td>
-                        <td className="px-3 py-2 break-words">{v.servicio_nombre ?? "Viaje"}</td>
-                        <td className="px-3 py-2 break-words">{operacionById.get(v.operacion_id)?.nombre ?? `Operación #${v.operacion_id}`}</td>
-                        <td className="px-3 py-2 break-words">
+                        <td className="px-2 py-2 whitespace-nowrap">{v.id}</td>
+                        <td className="px-2 py-2 whitespace-nowrap">{v.fecha_servicio}</td>
+                        <td className="px-2 py-2 max-w-[150px] truncate" title={v.titulo}>{v.titulo}</td>
+                        <td className="px-2 py-2 max-w-[130px] truncate" title={v.servicio_nombre ?? "Viaje"}>{v.servicio_nombre ?? "Viaje"}</td>
+                        <td className="px-2 py-2 max-w-[170px] truncate" title={operacionById.get(v.operacion_id)?.nombre ?? `Operación #${v.operacion_id}`}>
+                          {operacionById.get(v.operacion_id)?.nombre ?? `Operación #${v.operacion_id}`}
+                        </td>
+                        <td className="px-2 py-2 max-w-[220px] truncate" title={`${v.origen} - ${v.destino}`}>
                           {v.origen} - {v.destino}
                         </td>
-                        <td className="px-3 py-2 break-words">{v.placa}</td>
-                        <td className="px-3 py-2 break-words">
+                        <td className="px-2 py-2 whitespace-nowrap">{v.placa}</td>
+                        <td className="px-2 py-2 whitespace-nowrap">
                           <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${estadoClass}`}>
                             {estadoVisible}
                           </span>
                         </td>
                         {isCointraAdmin && (
-                          <td className="px-3 py-2 break-words">{v.activo ? "Sí" : "No"}</td>
+                          <td className="px-2 py-2 whitespace-nowrap">{v.activo ? "Sí" : "No"}</td>
                         )}
-                        <td className="px-3 py-2 break-words">
+                        <td className="px-2 py-2 max-w-[180px] truncate">
                           {v.conciliacion_id ? (
                             <button
                               type="button"
@@ -1872,7 +1875,8 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                 setActiveModule("conciliaciones");
                                 void loadItems(v.conciliacion_id as number, true);
                               }}
-                              className="text-xs font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                              className="inline-block max-w-[170px] truncate text-xs font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                              title={conc ? `${conc.nombre} (#${conc.id})` : `Conciliación #${v.conciliacion_id}`}
                             >
                               {conc ? `${conc.nombre} (#${conc.id})` : `Conciliación #${v.conciliacion_id}`}
                             </button>
@@ -1881,22 +1885,22 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                           )}
                         </td>
                         {user.rol !== "CLIENTE" && (
-                          <td className="px-3 py-2 break-words">
-                            {formatCOP(v.tarifa_tercero)}
+                          <td className="px-2 py-2 whitespace-nowrap">
+                            {formatMoney(v.tarifa_tercero)}
                           </td>
                         )}
                         {user.rol !== "TERCERO" && (
-                          <td className="px-3 py-2 break-words">
-                            {formatCOP(v.tarifa_cliente)}
+                          <td className="px-2 py-2 whitespace-nowrap">
+                            {formatMoney(v.tarifa_cliente)}
                           </td>
                         )}
                         {user.rol === "COINTRA" && (
-                          <td className="px-3 py-2 break-words">
-                            {formatCOP(getGananciaCointra(v.tarifa_cliente, v.tarifa_tercero))}
+                          <td className="px-2 py-2 whitespace-nowrap">
+                            {formatMoney(getGananciaCointra(v.tarifa_cliente, v.tarifa_tercero))}
                           </td>
                         )}
                         {isCointraAdmin && (
-                          <td className="px-3 py-2 break-words">
+                          <td className="px-2 py-2 whitespace-nowrap">
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
@@ -2269,15 +2273,15 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 <table className="min-w-full border-collapse text-sm">
                   <thead>
                     <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
-                      <th className="border-b border-border px-3 py-2 text-left" />
-                      <th className="border-b border-border px-3 py-2 text-left">ID</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Título servicio</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Operación</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Tipo servicio</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Ruta</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Placa</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Tarifa tercero</th>
+                      <th className="border-b border-border px-3 py-2 text-center" />
+                      <th className="border-b border-border px-3 py-2 text-center">ID</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Título servicio</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Operación</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Tipo servicio</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Fecha</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Ruta</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Placa</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Tarifa tercero</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2306,7 +2310,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                           {v.origen} - {v.destino}
                         </td>
                         <td className="px-3 py-2">{v.placa}</td>
-                        <td className="px-3 py-2">{formatCOP(v.tarifa_tercero)}</td>
+                        <td className="px-3 py-2">{formatMoney(v.tarifa_tercero)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2505,17 +2509,17 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                   </label>
                                 </th>
                               )}
-                              <th className="border-b border-indigo-100 px-2 py-1 text-left">Placa</th>
-                              <th className="border-b border-indigo-100 px-2 py-1 text-left">Tipo</th>
-                              <th className="border-b border-indigo-100 px-2 py-1 text-left">Estado</th>
+                              <th className="border-b border-indigo-100 px-2 py-1 text-center">Placa</th>
+                              <th className="border-b border-indigo-100 px-2 py-1 text-center">Tipo</th>
+                              <th className="border-b border-indigo-100 px-2 py-1 text-center">Estado</th>
                               {user.rol !== "CLIENTE" && (
-                                <th className="border-b border-indigo-100 px-2 py-1 text-left">Valor tercero</th>
+                                <th className="border-b border-indigo-100 px-2 py-1 text-center">Valor tercero</th>
                               )}
                               {user.rol !== "TERCERO" && (
-                                <th className="border-b border-indigo-100 px-2 py-1 text-left">Valor cliente</th>
+                                <th className="border-b border-indigo-100 px-2 py-1 text-center">Valor cliente</th>
                               )}
                               {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
-                                <th className="border-b border-indigo-100 px-2 py-1 text-left">Acción</th>
+                                <th className="border-b border-indigo-100 px-2 py-1 text-center">Acción</th>
                               )}
                             </tr>
                           </thead>
@@ -2642,8 +2646,8 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                         )}
                         {user.rol === "COINTRA" && (
                           <>
-                            <span>Rentabilidad: {liquidacionResumen.rentabilidadPct.toFixed(2)}%</span>
-                            <span>Ganancia Cointra: {formatCOP(liquidacionResumen.gananciaCointra)}</span>
+                            <span>Rentabilidad: {liquidacionResumen.rentabilidadPct.toFixed(1)}%</span>
+                            <span>Ganancia Cointra: {formatMoney(liquidacionResumen.gananciaCointra)}</span>
                           </>
                         )}
                       </div>
@@ -2851,7 +2855,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                       </div>
                     </div>
                     {reviewError && (
-                      <p className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">{reviewError}</p>
+                      <p className="whitespace-pre-line rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">{reviewError}</p>
                     )}
                   </div>
                 )
@@ -2966,13 +2970,13 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 <table className="min-w-full border-collapse text-sm">
                   <thead>
                     <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
-                      <th className="border-b border-border px-3 py-2 text-left">ID</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Tipo</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Estado</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Fecha</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Origen</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Destino</th>
-                      <th className="border-b border-border px-3 py-2 text-left">Placa</th>
+                      <th className="border-b border-border px-3 py-2 text-center">ID</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Tipo</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Estado</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Fecha</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Origen</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Destino</th>
+                      <th className="border-b border-border px-3 py-2 text-center">Placa</th>
                       {user.rol === "CLIENTE" && selected.estado === "EN_REVISION" && (
                         <th className="border-b border-border px-3 py-2 text-center">
                           <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
@@ -2996,19 +3000,19 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                         </th>
                       )}
                       {user.rol !== "CLIENTE" && (
-                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Tercero</th>
+                        <th className="border-b border-border px-3 py-2 text-center">Tarifa Tercero</th>
                       )}
                       {user.rol !== "TERCERO" && (
-                        <th className="border-b border-border px-3 py-2 text-left">Tarifa Cliente</th>
+                        <th className="border-b border-border px-3 py-2 text-center">Tarifa Cliente</th>
                       )}
                       {user.rol === "COINTRA" && (
-                        <th className="border-b border-border px-3 py-2 text-left">Ganancia Cointra</th>
+                        <th className="border-b border-border px-3 py-2 text-center">Ganancia Cointra</th>
                       )}
                       {user.rol === "COINTRA" && (
-                        <th className="border-b border-border px-3 py-2 text-left">Rentabilidad %</th>
+                        <th className="border-b border-border px-3 py-2 text-center">Rentabilidad %</th>
                       )}
                       {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
-                        <th className="border-b border-border px-3 py-2 text-left">Acciones</th>
+                        <th className="border-b border-border px-3 py-2 text-center">Acciones</th>
                       )}
                     </tr>
                   </thead>
@@ -3124,7 +3128,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                         )}
                         {user.rol === "COINTRA" && (
                           <td className="px-3 py-2">
-                            {formatCOP(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
+                            {formatMoney(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
                           </td>
                         )}
                         {user.rol === "COINTRA" && (
@@ -3141,18 +3145,18 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                   className="w-20 rounded-lg border border-border bg-white px-2 py-1.5 text-xs text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
                                 />
                                 <p className="text-[11px] text-neutral">
-                                  Valor: {formatCOP(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
+                                  Valor: {formatMoney(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
                                 </p>
                               </div>
                             ) : (
                               <>
                                 <span>
                                   {item.rentabilidad !== null && item.rentabilidad !== undefined
-                                    ? `${formatCOP(item.rentabilidad)} %`
+                                    ? `${item.rentabilidad.toFixed(1)}%`
                                     : "-"}
                                 </span>
                                 <p className="text-[11px] text-neutral">
-                                  Valor: {formatCOP(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
+                                  Valor: {formatMoney(getGananciaCointra(item.tarifa_cliente, item.tarifa_tercero))}
                                 </p>
                               </>
                             )}
@@ -3192,7 +3196,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                   <span>Total Cliente: {formatCOP(totals.tarifaCliente)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Ganancia Cointra: {formatCOP(totals.gananciaCointra)}</span>
+                  <span>Total Ganancia Cointra: {formatMoney(totals.gananciaCointra)}</span>
                 )}
               </div>
               {user.rol === "CLIENTE" && selected.estado === "EN_REVISION" && (
@@ -3515,24 +3519,24 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               </div>
               <div className="rounded-xl border border-border bg-slate-50 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral">Tarifa tercero</p>
-                <p className="mt-1 text-sm font-semibold text-slate-900">{formatCOP(selectedViajeDetalle.tarifa_tercero)}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">{formatMoney(selectedViajeDetalle.tarifa_tercero)}</p>
               </div>
               <div className="rounded-xl border border-border bg-slate-50 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral">Tarifa cliente</p>
-                <p className="mt-1 text-sm font-semibold text-slate-900">{formatCOP(selectedViajeDetalle.tarifa_cliente)}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">{formatMoney(selectedViajeDetalle.tarifa_cliente)}</p>
               </div>
               <div className="rounded-xl border border-border bg-slate-50 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral">Rentabilidad</p>
                 <p className="mt-1 text-sm font-semibold text-slate-900">
                   {selectedViajeDetalle.rentabilidad !== null && selectedViajeDetalle.rentabilidad !== undefined
-                    ? `${formatCOP(selectedViajeDetalle.rentabilidad)} %`
+                    ? `${selectedViajeDetalle.rentabilidad.toFixed(1)}%`
                     : "-"}
                 </p>
               </div>
               <div className="rounded-xl border border-border bg-slate-50 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral">Ganancia Cointra</p>
                 <p className="mt-1 text-sm font-semibold text-slate-900">
-                  {formatCOP(getGananciaCointra(selectedViajeDetalle.tarifa_cliente, selectedViajeDetalle.tarifa_tercero))}
+                  {formatMoney(getGananciaCointra(selectedViajeDetalle.tarifa_cliente, selectedViajeDetalle.tarifa_tercero))}
                 </p>
               </div>
             </div>

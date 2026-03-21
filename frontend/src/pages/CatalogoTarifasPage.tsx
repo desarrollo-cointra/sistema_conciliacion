@@ -27,6 +27,15 @@ export function CatalogoTarifasPage({ user }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState<{ id: number; action: "inactivar" | "reactivar" } | null>(null);
+  const [editRow, setEditRow] = useState<{
+    id: number;
+    servicio_id: string;
+    tipo_vehiculo_id: string;
+    tarifa_cliente: string;
+    rentabilidad_pct: string;
+    activo: boolean;
+  } | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string>("");
   const [form, setForm] = useState({
     servicio_id: "",
     tipo_vehiculo_id: "",
@@ -43,6 +52,10 @@ export function CatalogoTarifasPage({ user }: Props) {
     if (!tarifaCliente || factor <= 0) return 0;
     return tarifaCliente * factor;
   }, [form.tarifa_cliente, form.rentabilidad_pct]);
+
+  function formatMoney(value: number): string {
+    return `$ ${formatCOP(value)}`;
+  }
 
   async function loadData() {
     setLoading(true);
@@ -99,6 +112,29 @@ export function CatalogoTarifasPage({ user }: Props) {
       }
       setConfirm(null);
       await loadData();
+    } catch (e) {
+      setError(toSpanishError(e));
+    }
+  }
+
+  async function onConfirmEdit() {
+    if (!editRow) return;
+    setError("");
+    if (!editRow.servicio_id || !editRow.tipo_vehiculo_id || !editRow.tarifa_cliente || !editRow.rentabilidad_pct) {
+      setError("Debes completar todos los campos de la tarifa.");
+      return;
+    }
+    try {
+      await api.editarCatalogoTarifa(editRow.id, {
+        servicio_id: Number(editRow.servicio_id),
+        tipo_vehiculo_id: Number(editRow.tipo_vehiculo_id),
+        tarifa_cliente: Number(editRow.tarifa_cliente),
+        rentabilidad_pct: Number(editRow.rentabilidad_pct),
+        activo: editRow.activo,
+      });
+      setEditRow(null);
+      await loadData();
+      setSaveNotice("La tarifa fue actualizada correctamente.");
     } catch (e) {
       setError(toSpanishError(e));
     }
@@ -181,7 +217,7 @@ export function CatalogoTarifasPage({ user }: Props) {
         </form>
 
         <p className="mt-3 text-xs text-neutral">
-          Tarifa tercero estimada: <span className="font-semibold text-slate-900">{formatCOP(tarifaTerceroPreview)}</span>
+          Tarifa tercero estimada: <span className="font-semibold text-slate-900">{formatMoney(tarifaTerceroPreview)}</span>
         </p>
       </section>
 
@@ -208,9 +244,9 @@ export function CatalogoTarifasPage({ user }: Props) {
                   <tr key={row.id} className="border-b border-border last:border-0">
                     <td className="px-3 py-2">{row.servicio_nombre ?? `#${row.servicio_id}`}</td>
                     <td className="px-3 py-2">{row.tipo_vehiculo_nombre ?? `#${row.tipo_vehiculo_id}`}</td>
-                    <td className="px-3 py-2">{formatCOP(row.tarifa_cliente)}</td>
-                    <td className="px-3 py-2">{row.rentabilidad_pct.toFixed(2)}%</td>
-                    <td className="px-3 py-2">{formatCOP(row.tarifa_tercero)}</td>
+                    <td className="px-3 py-2">{formatMoney(row.tarifa_cliente)}</td>
+                    <td className="px-3 py-2">{row.rentabilidad_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2">{formatMoney(row.tarifa_tercero)}</td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${
@@ -221,15 +257,33 @@ export function CatalogoTarifasPage({ user }: Props) {
                       </span>
                     </td>
                     <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setConfirm({ id: row.id, action: row.activo ? "inactivar" : "reactivar" })
-                        }
-                        className="inline-flex items-center rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
-                      >
-                        {row.activo ? "Inactivar" : "Reactivar"}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditRow({
+                              id: row.id,
+                              servicio_id: String(row.servicio_id),
+                              tipo_vehiculo_id: String(row.tipo_vehiculo_id),
+                              tarifa_cliente: String(row.tarifa_cliente),
+                              rentabilidad_pct: String(row.rentabilidad_pct),
+                              activo: row.activo,
+                            })
+                          }
+                          className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 shadow-sm hover:bg-emerald-100"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setConfirm({ id: row.id, action: row.activo ? "inactivar" : "reactivar" })
+                          }
+                          className="inline-flex items-center rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+                        >
+                          {row.activo ? "Inactivar" : "Reactivar"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -251,6 +305,92 @@ export function CatalogoTarifasPage({ user }: Props) {
         confirmText={confirm?.action === "inactivar" ? "Inactivar" : "Reactivar"}
         onClose={() => setConfirm(null)}
         onConfirm={() => void onConfirmAction()}
+      />
+
+      <ActionModal
+        open={!!editRow}
+        title="Editar tarifa"
+        description="Modifica los campos necesarios y confirma para guardar los cambios."
+        confirmText="Guardar cambios"
+        cancelText="Cancelar"
+        onClose={() => setEditRow(null)}
+        onConfirm={() => void onConfirmEdit()}
+      >
+        <div className="grid gap-3">
+          <select
+            value={editRow?.servicio_id ?? ""}
+            onChange={(e) =>
+              setEditRow((prev) => (prev ? { ...prev, servicio_id: e.target.value } : prev))
+            }
+            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+          >
+            {servicios.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.nombre}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={editRow?.tipo_vehiculo_id ?? ""}
+            onChange={(e) =>
+              setEditRow((prev) => (prev ? { ...prev, tipo_vehiculo_id: e.target.value } : prev))
+            }
+            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+          >
+            {tipos.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.nombre}
+              </option>
+            ))}
+          </select>
+
+          <input
+            type="number"
+            min={1}
+            step="0.01"
+            value={editRow?.tarifa_cliente ?? ""}
+            onChange={(e) =>
+              setEditRow((prev) => (prev ? { ...prev, tarifa_cliente: e.target.value } : prev))
+            }
+            placeholder="Tarifa cliente"
+            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+          />
+
+          <input
+            type="number"
+            min={0}
+            max={99.99}
+            step="0.01"
+            value={editRow?.rentabilidad_pct ?? ""}
+            onChange={(e) =>
+              setEditRow((prev) => (prev ? { ...prev, rentabilidad_pct: e.target.value } : prev))
+            }
+            placeholder="Rentabilidad %"
+            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+          />
+
+          <select
+            value={editRow?.activo ? "true" : "false"}
+            onChange={(e) =>
+              setEditRow((prev) => (prev ? { ...prev, activo: e.target.value === "true" } : prev))
+            }
+            className="rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+          >
+            <option value="true">ACTIVO</option>
+            <option value="false">INACTIVO</option>
+          </select>
+        </div>
+      </ActionModal>
+
+      <ActionModal
+        open={!!saveNotice}
+        title="Cambios guardados"
+        description={saveNotice}
+        confirmText="Aceptar"
+        cancelText="Cerrar"
+        onClose={() => setSaveNotice("")}
+        onConfirm={() => setSaveNotice("")}
       />
     </div>
   );

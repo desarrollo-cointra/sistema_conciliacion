@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { ActionModal } from "./components/common/ActionModal";
 import { LoginForm } from "./components/LoginForm";
 import { Layout } from "./components/layout/Layout";
@@ -30,6 +30,14 @@ export function App() {
   const [pendingNotificacionId, setPendingNotificacionId] = useState<number | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const queryOpenConciliacionId = useMemo(() => {
+    if (location.pathname !== "/conciliaciones") return null;
+    const raw = new URLSearchParams(location.search).get("open_conciliacion_id");
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, [location.pathname, location.search]);
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem("token");
@@ -218,9 +226,12 @@ export function App() {
               onRefreshConciliaciones={async () => {
                 await refreshAlertsData();
               }}
-              openConciliacionId={pendingConciliacionId}
+              openConciliacionId={pendingConciliacionId ?? queryOpenConciliacionId}
               onOpenConciliacionHandled={() => {
                 setPendingConciliacionId(null);
+                if (queryOpenConciliacionId) {
+                  navigate("/conciliaciones", { replace: true });
+                }
                 if (pendingNotificacionId) {
                   setNotificaciones((prev) => {
                     const next = prev.filter((x) => x.id !== pendingNotificacionId);

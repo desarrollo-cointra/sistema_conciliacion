@@ -76,9 +76,10 @@ def _needs_origen_destino(servicio: Servicio | None) -> bool:
 def _calculate_horas_hasta_corte(hora_inicio: time, corte: time = time(6, 0)) -> float:
     start_minutes = hora_inicio.hour * 60 + hora_inicio.minute
     end_minutes = corte.hour * 60 + corte.minute
-    if start_minutes >= end_minutes:
-        raise HTTPException(status_code=400, detail="La hora inicio para Hora Extra debe ser anterior a las 06:00")
-    return round((end_minutes - start_minutes) / 60, 2)
+    total_minutes = (end_minutes - start_minutes) % (24 * 60)
+    if total_minutes == 0:
+        total_minutes = 24 * 60
+    return round(total_minutes / 60, 2)
 
 
 @router.post("", response_model=ViajeOut)

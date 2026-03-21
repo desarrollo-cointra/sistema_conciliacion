@@ -11,6 +11,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user, is_cointra_admin
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.comentario import Comentario
 from app.models.conciliacion import Conciliacion
@@ -58,6 +59,10 @@ MANIFIESTO_CONTEXTOS_VALIDOS = {
     MANIFIESTO_CONTEXTO_CONCILIACION,
     MANIFIESTO_CONTEXTO_LIQUIDACION,
 }
+
+
+def _login_url() -> str:
+    return f"{settings.frontend_url.rstrip('/')}/login"
 
 
 def _estado_conciliacion_viaje(viaje: Viaje):
@@ -695,6 +700,96 @@ def _validate_manifests_match_plates_or_raise(
                 "invalid_manifiestos": manifests_invalidos,
             },
         )
+
+
+def _required_placas_by_context(items: list[ConciliacionItem], contexto: str) -> set[str]:
+    return {
+        _normalize_placa_for_compare(item.placa)
+        for item in items
+        if (
+            (
+                contexto == MANIFIESTO_CONTEXTO_LIQUIDACION
+                and _extract_liquidacion_metadata(item)
+            )
+            or (
+                contexto == MANIFIESTO_CONTEXTO_CONCILIACION
+                and not _extract_liquidacion_metadata(item)
+            )
+        )
+        and _normalize_placa_for_compare(item.placa)
+    }
+
+
+def _associated_placas_by_context(
+    db: Session,
+    manifests: list[ConciliacionManifiesto],
+) -> set[str]:
+    if not manifests:
+        return set()
+
+    manifest_numbers = [
+        _normalize_manifiesto_for_lookup(row.manifiesto_numero)
+        for row in manifests
+        if _normalize_manifiesto_for_lookup(row.manifiesto_numero)
+    ]
+    if not manifest_numbers:
+        return set()
+
+    avansat_map, _ = resolve_avansat_from_cache_only(db, manifest_numbers)
+    placas: set[str] = set()
+    for number in manifest_numbers:
+        avansat = avansat_map.get(number) or {}
+        placa = _normalize_placa_for_compare(avansat.get("placa_vehiculo") or "")
+        if placa:
+            placas.add(placa)
+    return placas
+
+
+def _ensure_required_manifests_for_review_or_raise(db: Session, conciliacion_id: int) -> None:
+    items = (
+        db.query(ConciliacionItem)
+        .filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+        .all()
+    )
+    manifests = (
+        db.query(ConciliacionManifiesto)
+        .filter(ConciliacionManifiesto.conciliacion_id == conciliacion_id)
+        .all()
+    )
+
+    manifests_conciliacion = [
+        row for row in manifests if row.contexto == MANIFIESTO_CONTEXTO_CONCILIACION
+    ]
+    manifests_liquidacion = [
+        row for row in manifests if row.contexto == MANIFIESTO_CONTEXTO_LIQUIDACION
+    ]
+
+    required_conciliacion = _required_placas_by_context(items, MANIFIESTO_CONTEXTO_CONCILIACION)
+    required_liquidacion = _required_placas_by_context(items, MANIFIESTO_CONTEXTO_LIQUIDACION)
+    associated_conciliacion = _associated_placas_by_context(db, manifests_conciliacion)
+    associated_liquidacion = _associated_placas_by_context(db, manifests_liquidacion)
+
+    missing_conciliacion = sorted(required_conciliacion - associated_conciliacion)
+    missing_liquidacion = sorted(required_liquidacion - associated_liquidacion)
+    if not missing_conciliacion and not missing_liquidacion:
+        return
+
+    detail_lines: list[str] = []
+    if missing_liquidacion:
+        detail_lines.append(
+            "En el contrato fijo te falta asociar manifiestos para los servicios de los vehiculos "
+            f"{', '.join(missing_liquidacion)}"
+        )
+    if missing_conciliacion:
+        detail_lines.append(
+            "En la conciliacion te falta asociar manifiestos para los servicios de los vehiculos "
+            f"{', '.join(missing_conciliacion)}"
+        )
+
+    raise HTTPException(
+        status_code=400,
+        detail="\n".join(detail_lines),
+    )
 
 
 def _prepare_facturacion_rows(
@@ -2339,11 +2434,18 @@ def create_manifiesto(
         .first()
     )
     if exists:
+        if exists.conciliacion_id != conciliacion_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"El manifiesto {manifiesto_numero} ya fue liquidado en la conciliacion #{exists.conciliacion_id}"
+                ),
+            )
         raise HTTPException(
             status_code=400,
             detail=(
-                f"El manifiesto {manifiesto_numero} ya esta asociado a la "
-                f"{_contexto_label(exists.contexto)} de la conciliacion #{exists.conciliacion_id}"
+                f"El manifiesto {manifiesto_numero} ya esta asociado en esta conciliacion "
+                f"({_contexto_label(exists.contexto)})."
             ),
         )
 
@@ -2462,11 +2564,18 @@ def update_manifiesto(
         .first()
     )
     if exists:
+        if exists.conciliacion_id != conciliacion_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"El manifiesto {new_value} ya fue liquidado en la conciliacion #{exists.conciliacion_id}"
+                ),
+            )
         raise HTTPException(
             status_code=400,
             detail=(
-                f"El manifiesto {new_value} ya esta asociado a la "
-                f"{_contexto_label(exists.contexto)} de la conciliacion #{exists.conciliacion_id}"
+                f"El manifiesto {new_value} ya esta asociado en esta conciliacion "
+                f"({_contexto_label(exists.contexto)})."
             ),
         )
 
@@ -2739,6 +2848,8 @@ def enviar_revision(
             detail="Debes guardar la conciliacion antes de enviarla a revision",
         )
 
+    _ensure_required_manifests_for_review_or_raise(db, conc.id)
+
     conc.estado = "EN_REVISION"
     conc.enviada_facturacion = False
     _sync_viajes_conciliado_por_estado(db, conc.id, conc.estado)
@@ -2761,6 +2872,7 @@ def enviar_revision(
     if target_emails:
         subject = conc.nombre
         custom_message = payload.mensaje or ""
+        login_url = _login_url()
         body = (
             f"Hola,\n\n"
             f"Cointra envio la conciliacion '{conc.nombre}' para tu revision.\n"
@@ -2768,7 +2880,8 @@ def enviar_revision(
             f"Periodo: {conc.fecha_inicio} a {conc.fecha_fin}\n\n"
             f"Enviado por: {_sender_signature(user)}\n\n"
             f"Mensaje: {custom_message or '(sin mensaje)'}\n\n"
-            "Ingresa al sistema para revisar y autorizar la conciliacion.\n\n"
+            "Ingresa al sistema para revisar y autorizar la conciliacion.\n"
+            f"Accede aqui: {login_url}\n\n"
         )
         email_result = send_manual_email(target_emails, subject=subject, body=body)
         if email_result["failed"] >= len(target_emails):
@@ -2839,6 +2952,7 @@ def aprobar_conciliacion_cliente(
     if target_emails:
         subject = f"Conciliacion aprobada: {conc.nombre}"
         custom_message = payload.mensaje or ""
+        login_url = _login_url()
         body = (
             f"Hola,\n\n"
             f"El cliente aprobo la conciliacion '{conc.nombre}'.\n"
@@ -2846,7 +2960,8 @@ def aprobar_conciliacion_cliente(
             f"Periodo: {conc.fecha_inicio} a {conc.fecha_fin}\n\n"
             f"Enviado por: {_sender_signature(user)}\n\n"
             f"Mensaje: {custom_message or '(sin mensaje)'}\n\n"
-            "Ingresa al sistema para continuar con el flujo.\n\n"
+            "Ingresa al sistema para continuar con el flujo.\n"
+            f"Accede aqui: {login_url}\n\n"
         )
         send_manual_email(target_emails, subject=subject, body=body)
 
@@ -2919,6 +3034,7 @@ def devolver_conciliacion_cliente(
     if target_emails:
         subject = f"Conciliacion devuelta con novedades: {conc.nombre}"
         custom_message = payload.mensaje or ""
+        login_url = _login_url()
         body = (
             f"Hola,\n\n"
             f"El cliente devolvio la conciliacion '{conc.nombre}' con novedades.\n"
@@ -2927,7 +3043,8 @@ def devolver_conciliacion_cliente(
             f"Observacion: {payload.observacion}\n\n"
             f"Enviado por: {_sender_signature(user)}\n\n"
             f"Mensaje: {custom_message or '(sin mensaje)'}\n\n"
-            "Ingresa al sistema para revisar, ajustar y reenviar.\n\n"
+            "Ingresa al sistema para revisar, ajustar y reenviar.\n"
+            f"Accede aqui: {login_url}\n\n"
         )
         send_manual_email(target_emails, subject=subject, body=body)
 

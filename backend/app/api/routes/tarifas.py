@@ -10,7 +10,7 @@ from app.models.enums import UserRole
 from app.models.servicio import Servicio
 from app.models.tipo_vehiculo import TipoVehiculo
 from app.models.usuario import Usuario
-from app.schemas.servicio import CatalogoTarifaOut, CatalogoTarifaUpsert
+from app.schemas.servicio import CatalogoTarifaOut, CatalogoTarifaUpsert, CatalogoTarifaUpdate
 from app.services.pricing import calculate_tarifa_tercero_from_cliente
 
 router = APIRouter(prefix="/catalogo-tarifas", tags=["catalogo-tarifas"])
@@ -147,6 +147,67 @@ def upsert_catalogo_tarifa(
     )
     db.add(row)
 
+    db.commit()
+    db.refresh(row)
+    return _to_out(row)
+
+
+@router.patch("/{catalogo_id}", response_model=CatalogoTarifaOut)
+def update_catalogo_tarifa(
+    catalogo_id: int,
+    payload: CatalogoTarifaUpdate,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    _ensure_cointra_admin(user)
+
+    row = db.get(CatalogoTarifa, catalogo_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Registro de tarifa no encontrado")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    next_servicio_id = int(data.get("servicio_id", row.servicio_id))
+    next_tipo_vehiculo_id = int(data.get("tipo_vehiculo_id", row.tipo_vehiculo_id))
+
+    servicio = db.get(Servicio, next_servicio_id)
+    if not servicio or not servicio.activo:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+
+    tipo = db.get(TipoVehiculo, next_tipo_vehiculo_id)
+    if not tipo or not tipo.activo:
+        raise HTTPException(status_code=404, detail="Tipo de vehiculo no encontrado")
+
+    duplicated = (
+        db.query(CatalogoTarifa)
+        .filter(
+            CatalogoTarifa.servicio_id == next_servicio_id,
+            CatalogoTarifa.tipo_vehiculo_id == next_tipo_vehiculo_id,
+            CatalogoTarifa.id != catalogo_id,
+        )
+        .first()
+    )
+    if duplicated:
+        raise HTTPException(
+            status_code=400,
+            detail="Ya existe una tarifa para ese servicio y tipo de vehiculo",
+        )
+
+    row.servicio_id = next_servicio_id
+    row.tipo_vehiculo_id = next_tipo_vehiculo_id
+    if "tarifa_cliente" in data and data["tarifa_cliente"] is not None:
+        row.tarifa_cliente = data["tarifa_cliente"]
+    if "rentabilidad_pct" in data and data["rentabilidad_pct"] is not None:
+        row.rentabilidad_pct = data["rentabilidad_pct"]
+    if "activo" in data and data["activo"] is not None:
+        row.activo = bool(data["activo"])
+
+    row.tarifa_tercero = calculate_tarifa_tercero_from_cliente(
+        float(row.tarifa_cliente),
+        float(row.rentabilidad_pct),
+    )
+    row.updated_by = user.id
+    row.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(row)
     return _to_out(row)

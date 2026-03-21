@@ -6,8 +6,8 @@ interface Props {
 }
 
 export function LoginForm({ onLogin }: Props) {
-  const [email, setEmail] = useState("cointra@cointra.com");
-  const [password, setPassword] = useState("cointra123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -38,6 +38,7 @@ export function LoginForm({ onLogin }: Props) {
             onChange={(e) => setEmail(e.target.value)}
             type="email"
             required
+            placeholder="Ej. usuario@empresa.com"
             className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none ring-primary/10 placeholder:text-slate-400 focus:border-primary focus:ring-2"
           />
         </div>
@@ -51,6 +52,7 @@ export function LoginForm({ onLogin }: Props) {
               onChange={(e) => setPassword(e.target.value)}
               type={showPassword ? "text" : "password"}
               required
+              placeholder="Escribe tu contraseña"
               className="w-full rounded-lg border border-border bg-white px-3 py-2.5 pr-14 text-sm text-slate-900 shadow-sm outline-none ring-primary/10 placeholder:text-slate-400 focus:border-primary focus:ring-2"
             />
             <button
@@ -87,10 +89,6 @@ export function LoginForm({ onLogin }: Props) {
         <Link to="/forgot-password" className="font-medium text-emerald-700 hover:text-emerald-800">
           Olvide mi contraseña
         </Link>
-      </p>
-
-      <p className="text-xs leading-relaxed text-neutral">
-        Demo: cointra@cointra.com / cliente@cointra.com / tercero@cointra.com (clave terminada en 123)
       </p>
     </form>
   );

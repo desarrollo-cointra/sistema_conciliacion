@@ -222,6 +222,8 @@ export interface AvansatLookup {
 export interface AvansatCacheRow {
   manifiesto_numero: string;
   estado: "SINCRONIZADO";
+  conciliacion_id: number | null;
+  conciliacion_contexto: "CONCILIACION" | "LIQUIDACION_CONTRATO_FIJO" | null;
   fecha_emision: string | null;
   placa_vehiculo: string | null;
   trayler: string | null;
@@ -245,4 +247,77 @@ export interface AvansatSyncResult {
   skipped: number;
   start_date: string;
   end_date: string;
+}
+
+export interface DashboardPeriod {
+  mode: "current_month" | "year_to_date" | "month_year";
+  start_date: string;
+  end_date: string;
+  label: string;
+  compare_start_date: string;
+  compare_end_date: string;
+}
+
+export interface DashboardKpis {
+  conciliaciones: number;
+  servicios: number;
+  manifiestos: number;
+  ingresos: number;
+  costos: number;
+  ganancia: number;
+  margen_pct: number;
+  aprobacion_items_pct: number;
+  ticket_promedio: number;
+  placas_activas: number;
+  variacion_ganancia_pct: number;
+  viajes_pendientes: number;
+  viajes_en_revision: number;
+  viajes_conciliados: number;
+  conc_borrador: number;
+  conc_en_revision: number;
+  conc_aprobada: number;
+  conc_devuelta: number;
+  conc_enviada_facturar: number;
+}
+
+export interface DashboardLabelValue {
+  label: string;
+  value: number;
+}
+
+export interface DashboardSeriePoint {
+  label: string;
+  date: string;
+  ingresos: number;
+  costos: number;
+  ganancia: number;
+  servicios: number;
+}
+
+export interface DashboardTopEntry {
+  label: string;
+  servicios: number;
+  ingresos: number;
+  costos: number;
+  ganancia: number;
+}
+
+export interface DashboardTopOperacionEntry extends DashboardTopEntry {
+  operacion_id: number;
+}
+
+export interface DashboardIndicators {
+  period: DashboardPeriod;
+  kpis: DashboardKpis;
+  charts: {
+    conciliaciones_estado: DashboardLabelValue[];
+    items_estado: DashboardLabelValue[];
+    items_tipo: DashboardLabelValue[];
+    manifiestos_contexto: DashboardLabelValue[];
+    serie: DashboardSeriePoint[];
+    top_operaciones: DashboardTopOperacionEntry[];
+    top_placas: DashboardTopEntry[];
+    top_clientes: DashboardTopEntry[];
+    top_terceros: DashboardTopEntry[];
+  };
 }

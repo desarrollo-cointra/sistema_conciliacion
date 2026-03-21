@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "../services/api";
 import { AvansatCacheRow, User } from "../types";
@@ -30,6 +31,7 @@ export function AvansatPage({ user }: Props) {
   const [filters, setFilters] = useState({
     estado: "",
     manifiesto: "",
+    conciliacion_id: "",
     fecha_emision: "",
     placa_vehiculo: "",
     trayler: "",
@@ -51,6 +53,7 @@ export function AvansatPage({ user }: Props) {
       const activeFilters = overrideFilters ?? filters;
       const data = await api.avansatCache({
         ...activeFilters,
+        conciliacion_id: activeFilters.conciliacion_id ? Number(activeFilters.conciliacion_id) : undefined,
         estado: (activeFilters.estado as "SINCRONIZADO" | "") || undefined,
         page: nextPage,
         page_size: pageSize,
@@ -133,6 +136,7 @@ export function AvansatPage({ user }: Props) {
     const emptyFilters = {
       estado: "",
       manifiesto: "",
+      conciliacion_id: "",
       fecha_emision: "",
       placa_vehiculo: "",
       trayler: "",
@@ -306,11 +310,11 @@ export function AvansatPage({ user }: Props) {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="min-w-[1200px] border-collapse text-sm">
+          <table className="min-w-[1160px] border-collapse text-sm">
             <thead>
               <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-neutral">
-                <th className="border-b border-border px-3 py-2 text-left">Estado</th>
                 <th className="border-b border-border px-3 py-2 text-left">Manifiesto</th>
+                <th className="border-b border-border px-3 py-2 text-left">Conciliacion</th>
                 <th className="border-b border-border px-3 py-2 text-left">Fecha Emision</th>
                 <th className="border-b border-border px-3 py-2 text-left">Placa</th>
                 <th className="border-b border-border px-3 py-2 text-left">Trayler</th>
@@ -321,20 +325,8 @@ export function AvansatPage({ user }: Props) {
                 <th className="border-b border-border px-3 py-2 text-left">Ultima sync</th>
               </tr>
               <tr className="bg-white">
-                <th className="border-b border-border px-2 py-2">
-                  <select
-                    value={filters.estado}
-                    onChange={(e) => {
-                      setPage(1);
-                      setFilters((prev) => ({ ...prev, estado: e.target.value }));
-                    }}
-                    className="w-full rounded border border-border px-2 py-1 text-xs"
-                  >
-                    <option value="">Todos</option>
-                    <option value="SINCRONIZADO">SINCRONIZADO</option>
-                  </select>
-                </th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.manifiesto} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, manifiesto: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><input value={filters.conciliacion_id} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, conciliacion_id: e.target.value.replace(/[^0-9]/g, "") })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.fecha_emision} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, fecha_emision: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.placa_vehiculo} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, placa_vehiculo: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.trayler} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, trayler: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
@@ -348,12 +340,19 @@ export function AvansatPage({ user }: Props) {
             <tbody>
               {!loading && rows.map((row) => (
                 <tr key={row.manifiesto_numero} className="border-b border-border last:border-0">
-                  <td className="px-3 py-2 text-slate-700">
-                    <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                      {row.estado}
-                    </span>
-                  </td>
                   <td className="px-3 py-2 font-semibold text-slate-800">{row.manifiesto_numero}</td>
+                  <td className="px-3 py-2 text-slate-700">
+                    {row.conciliacion_id ? (
+                      <Link
+                        to={`/conciliaciones?open_conciliacion_id=${row.conciliacion_id}`}
+                        className="font-semibold text-primary underline underline-offset-2 hover:text-primary/80"
+                      >
+                        #{row.conciliacion_id}
+                      </Link>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-slate-700">{row.fecha_emision || "-"}</td>
                   <td className="px-3 py-2 text-slate-700">{row.placa_vehiculo || "-"}</td>
                   <td className="px-3 py-2 text-slate-700">{row.trayler || "-"}</td>

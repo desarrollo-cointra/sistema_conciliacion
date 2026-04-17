@@ -32,6 +32,14 @@ function sortByFechaAsc<T extends { fecha_servicio?: string | null; id?: number 
   });
 }
 
+function sortByFechaDesc<T extends { fecha_servicio?: string | null; id?: number }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const dateDiff = getDateSortValue(b.fecha_servicio) - getDateSortValue(a.fecha_servicio);
+    if (dateDiff !== 0) return dateDiff;
+    return (b.id ?? 0) - (a.id ?? 0);
+  });
+}
+
 function toSpanishError(error: unknown): string {
   const message = (error as Error)?.message || "";
   if (!message) return "Ocurrio un error inesperado";
@@ -466,7 +474,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         includesFilter(conciliacionLabel, filtrosTablaViajes.conciliacion)
       );
     });
-    return sortByFechaAsc(filtered);
+    return sortByFechaDesc(filtered);
   }, [viajes, filtroEstadoViaje, filtrosTablaViajes, operacionById, conciliacionById]);
 
   const totalServiciosPages = Math.max(1, Math.ceil(viajesFiltrados.length / SERVICIOS_PAGE_SIZE));

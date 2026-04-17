@@ -89,12 +89,17 @@ class ConciliacionItemUpdateEstado(BaseModel):
 
 
 class ConciliacionItemPatch(BaseModel):
+    fecha_servicio: date | None = None
+    origen: str | None = None
+    destino: str | None = None
     placa: str | None = None
+    conductor: str | None = None
     manifiesto_numero: str | None = None
     remesa: str | None = None
     tarifa_tercero: float | None = None
     tarifa_cliente: float | None = None
     rentabilidad: float | None = None
+    descripcion: str | None = None
 
 
 class ClienteItemDecision(BaseModel):

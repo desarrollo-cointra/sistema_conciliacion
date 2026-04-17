@@ -39,7 +39,6 @@ from app.schemas.conciliacion import (
     ConciliacionItemUpdateEstado,
     LiquidacionContratoFijoCreate,
     ConciliacionManifiestoCreate,
-    ConciliacionManifiestoUpdate,
     ConciliacionManifiestoOut,
     ConciliacionOut,
     ConciliacionWorkflowAction,
@@ -275,10 +274,7 @@ def _normalize_manifiesto_contexto(raw_contexto: str | None) -> str:
     if contexto not in MANIFIESTO_CONTEXTOS_VALIDOS:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Contexto de manifiesto invalido. "
-                "Usa CONCILIACION o LIQUIDACION_CONTRATO_FIJO"
-            ),
+            detail="Contexto de manifiesto invalido. Usa CONCILIACION",
         )
     return contexto
 
@@ -2227,93 +2223,6 @@ def delete_manifiesto(
     return {"ok": True}
 
 
-@router.patch("/{conciliacion_id}/manifiestos/{manifiesto_id}", response_model=ConciliacionManifiestoOut)
-def update_manifiesto(
-    conciliacion_id: int,
-    manifiesto_id: int,
-    payload: ConciliacionManifiestoUpdate,
-    db: Session = Depends(get_db),
-    user: Usuario = Depends(get_current_user),
-):
-    if user.rol != UserRole.COINTRA:
-        raise HTTPException(status_code=403, detail="Solo Cointra puede actualizar manifiestos")
-
-    conc = db.get(Conciliacion, conciliacion_id)
-    if not conc:
-        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
-
-    operacion = db.get(Operacion, conc.operacion_id)
-    _validate_user_access_operacion(user, operacion)
-
-    if conc.estado == "BORRADOR" or conc.enviada_facturacion:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se puede corregir manifiestos de liquidacion desde que la descarga esta habilitada y antes de enviar a facturacion",
-        )
-
-    row = db.get(ConciliacionManifiesto, manifiesto_id)
-    if not row or row.conciliacion_id != conciliacion_id:
-        raise HTTPException(status_code=404, detail="Manifiesto no encontrado en esta conciliacion")
-    if row.contexto != MANIFIESTO_CONTEXTO_LIQUIDACION:
-        raise HTTPException(status_code=400, detail="Solo se pueden corregir manifiestos del bloque de liquidacion")
-
-    if not _is_liquidacion_manifest_mismatch(db, conciliacion_id, row.manifiesto_numero):
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se puede actualizar el manifiesto que no coincide con la placa de la liquidacion",
-        )
-
-    new_value = _normalize_manifiesto_for_lookup(payload.manifiesto_numero)
-    if not new_value:
-        raise HTTPException(status_code=400, detail="Debes escribir un manifiesto valido")
-
-    _validate_manifiesto_placa_match_or_raise(
-        db,
-        conc.id,
-        row.contexto,
-        new_value,
-        row.liquidacion_contrato_fijo_id,
-    )
-
-    exists = (
-        db.query(ConciliacionManifiesto)
-        .filter(
-            ConciliacionManifiesto.manifiesto_numero == new_value,
-            ConciliacionManifiesto.id != row.id,
-        )
-        .first()
-    )
-    if exists:
-        if exists.conciliacion_id != conciliacion_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"El manifiesto {new_value} ya fue liquidado en la conciliacion #{exists.conciliacion_id}"
-                ),
-            )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"El manifiesto {new_value} ya esta asociado en esta conciliacion "
-                f"({_contexto_label(exists.contexto)})."
-            ),
-        )
-
-    old_value = row.manifiesto_numero
-    row.manifiesto_numero = new_value
-    log_change(
-        db,
-        usuario_id=user.id,
-        conciliacion_id=conciliacion_id,
-        campo="manifiesto_corregido_liquidacion",
-        valor_anterior=old_value,
-        valor_nuevo=new_value,
-    )
-    db.commit()
-    db.refresh(row)
-    return row
-
-
 @router.delete("/items/{item_id}")
 def delete_liquidacion_item(
     item_id: int,
@@ -2345,11 +2254,15 @@ def delete_liquidacion_item(
         db,
         usuario_id=user.id,
         conciliacion_id=conc.id,
-        item_id=item.id,
+        item_id=None,
         campo="liquidacion_contrato_fijo_eliminada",
-        valor_anterior=f"placa={item.placa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}",
+        valor_anterior=f"item_id={item.id}; placa={item.placa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}",
     )
     _mark_borrador_dirty(conc)
+    db.query(HistorialCambio).filter(HistorialCambio.item_id == item.id).update(
+        {HistorialCambio.item_id: None},
+        synchronize_session=False,
+    )
     db.delete(item)
     db.commit()
     return {"ok": True}
@@ -2430,19 +2343,44 @@ def patch_item(
 
     old_manifiesto = item.manifiesto_numero
     old_remesa = item.remesa
+    old_fecha_servicio = item.fecha_servicio
+    old_origen = item.origen
+    old_destino = item.destino
     old_placa = item.placa
+    old_conductor = item.conductor
     old_tarifa_tercero = item.tarifa_tercero
     old_tarifa_cliente = item.tarifa_cliente
     old_rentabilidad = item.rentabilidad
+    old_descripcion = item.descripcion
+
+    if "fecha_servicio" in changed:
+        if payload.fecha_servicio is None:
+            raise HTTPException(status_code=400, detail="La fecha del servicio es obligatoria")
+        item.fecha_servicio = payload.fecha_servicio
+
+    if "origen" in changed:
+        normalized_origen = str(payload.origen or "").strip()
+        item.origen = normalized_origen or None
+
+    if "destino" in changed:
+        normalized_destino = str(payload.destino or "").strip()
+        item.destino = normalized_destino or None
 
     if "placa" in changed:
         normalized_placa = str(payload.placa or "").strip().upper()
         item.placa = normalized_placa or None
 
+    if "conductor" in changed:
+        normalized_conductor = str(payload.conductor or "").strip()
+        item.conductor = normalized_conductor or None
+
     if "manifiesto_numero" in changed:
         item.manifiesto_numero = payload.manifiesto_numero
     if "remesa" in changed:
         item.remesa = payload.remesa
+    if "descripcion" in changed:
+        normalized_descripcion = str(payload.descripcion or "").strip()
+        item.descripcion = normalized_descripcion or None
 
     pct = float(operacion.porcentaje_rentabilidad)
     # Usar rentabilidad actual del ítem; solo como fallback la de la operación
@@ -2470,10 +2408,20 @@ def patch_item(
     if item.viaje_id is not None:
         viaje = db.get(Viaje, item.viaje_id)
         if viaje:
+            if "fecha_servicio" in changed and item.fecha_servicio:
+                viaje.fecha_servicio = item.fecha_servicio
+            if "origen" in changed:
+                viaje.origen = item.origen or ""
+            if "destino" in changed:
+                viaje.destino = item.destino or ""
             if "placa" in changed and item.placa:
                 viaje.placa = item.placa
+            if "conductor" in changed:
+                viaje.conductor = item.conductor
             if "manifiesto_numero" in changed:
                 viaje.manifiesto_numero = item.manifiesto_numero
+            if "descripcion" in changed:
+                viaje.descripcion = item.descripcion
             if tarifa_fields:
                 if item.tarifa_tercero is not None:
                     viaje.tarifa_tercero = item.tarifa_tercero
@@ -2488,8 +2436,18 @@ def patch_item(
         conciliacion_id=conc.id,
         item_id=item.id,
         campo="actualizacion_manual_item",
-        valor_anterior=f"placa={old_placa}; manifiesto={old_manifiesto}; remesa={old_remesa}; t3={old_tarifa_tercero}; tc={old_tarifa_cliente}; rent={old_rentabilidad}",
-        valor_nuevo=f"placa={item.placa}; manifiesto={item.manifiesto_numero}; remesa={item.remesa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}; rent={item.rentabilidad}",
+        valor_anterior=(
+            f"fecha={old_fecha_servicio}; origen={old_origen}; destino={old_destino}; "
+            f"placa={old_placa}; conductor={old_conductor}; manifiesto={old_manifiesto}; "
+            f"remesa={old_remesa}; t3={old_tarifa_tercero}; tc={old_tarifa_cliente}; "
+            f"rent={old_rentabilidad}; descripcion={old_descripcion}"
+        ),
+        valor_nuevo=(
+            f"fecha={item.fecha_servicio}; origen={item.origen}; destino={item.destino}; "
+            f"placa={item.placa}; conductor={item.conductor}; manifiesto={item.manifiesto_numero}; "
+            f"remesa={item.remesa}; t3={item.tarifa_tercero}; tc={item.tarifa_cliente}; "
+            f"rent={item.rentabilidad}; descripcion={item.descripcion}"
+        ),
     )
 
     db.commit()

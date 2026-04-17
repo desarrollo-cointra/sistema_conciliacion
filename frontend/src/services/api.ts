@@ -466,12 +466,17 @@ export const api = {
   patchConciliacionItem: (
     itemId: number,
     payload: {
+      fecha_servicio?: string | null;
+      origen?: string | null;
+      destino?: string | null;
       placa?: string | null;
+      conductor?: string | null;
       manifiesto_numero?: string | null;
       remesa?: string | null;
       tarifa_tercero?: number | null;
       tarifa_cliente?: number | null;
       rentabilidad?: number | null;
+      descripcion?: string | null;
     }
   ) =>
     request<Item>(`/conciliaciones/items/${itemId}`, {

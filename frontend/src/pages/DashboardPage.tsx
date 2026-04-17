@@ -255,6 +255,14 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
     placa: "",
     valor_tercero: "",
   });
+  const [liquidacionItemEditModal, setLiquidacionItemEditModal] = useState<
+    {
+      id: number;
+      placa: string;
+      tarifa_tercero: string;
+    } | null
+  >(null);
+  const [liquidacionItemDeleteConfirmId, setLiquidacionItemDeleteConfirmId] = useState<number | null>(null);
   const [viajeEditModal, setViajeEditModal] = useState<
     { id: number; titulo: string; origen: string; destino: string } | null
   >(null);
@@ -330,6 +338,21 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       .filter((vehiculo) => vehiculo.tercero_id === selectedOperacion.tercero_id)
       .sort((a, b) => a.placa.localeCompare(b.placa));
   }, [selectedOperacion, vehiculosActivos]);
+  const tipoVehiculoById = useMemo(() => {
+    return new Map(tiposVehiculo.map((tipo) => [tipo.id, tipo.nombre]));
+  }, [tiposVehiculo]);
+  const configuracionVehiculoByPlaca = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const vehiculo of vehiculos) {
+      const placa = String(vehiculo.placa || "").trim().toUpperCase();
+      if (!placa) continue;
+      const configuracion = tipoVehiculoById.get(vehiculo.tipo_vehiculo_id);
+      if (configuracion) {
+        map.set(placa, configuracion);
+      }
+    }
+    return map;
+  }, [vehiculos, tipoVehiculoById]);
 
   const conciliacionesFiltradas = useMemo(() => {
     return conciliaciones.filter((c) => {
@@ -647,6 +670,12 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
     if (!item.liquidacion_contrato_fijo) return null;
     if (!item.liquidacion_periodo_inicio || !item.liquidacion_periodo_fin) return null;
     return `${item.liquidacion_periodo_inicio} a ${item.liquidacion_periodo_fin}`;
+  }
+
+  function getConfiguracionVehiculoByPlaca(placa: string | null | undefined): string {
+    const normalized = String(placa || "").trim().toUpperCase();
+    if (!normalized) return "-";
+    return configuracionVehiculoByPlaca.get(normalized) ?? "-";
   }
 
   function isHoraExtraItem(item: Item): boolean {
@@ -1177,6 +1206,45 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
     }
   }
 
+  async function confirmarEliminarRegistroLiquidacion() {
+    if (liquidacionItemDeleteConfirmId === null) return;
+    await eliminarRegistroLiquidacion(liquidacionItemDeleteConfirmId);
+    setLiquidacionItemDeleteConfirmId(null);
+  }
+
+  function editarRegistroLiquidacion(item: Item) {
+    if (!selected || user.rol !== "COINTRA" || selected.estado !== "BORRADOR") return;
+    setLiquidacionItemEditModal({
+      id: item.id,
+      placa: item.placa ?? "",
+      tarifa_tercero: item.tarifa_tercero !== null && item.tarifa_tercero !== undefined ? String(item.tarifa_tercero) : "",
+    });
+  }
+
+  async function onConfirmEditLiquidacionRegistro() {
+    if (!liquidacionItemEditModal || !selected) return;
+    const tarifaTerceroRaw = liquidacionItemEditModal.tarifa_tercero.trim();
+    const tarifaTercero = tarifaTerceroRaw === "" ? null : Number(tarifaTerceroRaw);
+
+    if (tarifaTerceroRaw !== "" && Number.isNaN(tarifaTercero)) {
+      setError("Verifica los valores numéricos del registro.");
+      return;
+    }
+
+    setError("");
+    try {
+      const updated = await api.patchConciliacionItem(liquidacionItemEditModal.id, {
+        placa: liquidacionItemEditModal.placa.trim().toUpperCase() || null,
+        tarifa_tercero: tarifaTercero,
+      });
+      setItems((prev) => prev.map((item) => (item.id === liquidacionItemEditModal.id ? updated : item)));
+      await onRefreshConciliaciones();
+      setLiquidacionItemEditModal(null);
+    } catch (e) {
+      setError(toSpanishError(e));
+    }
+  }
+
   async function guardarConciliacionBorrador() {
     if (!selected || selected.estado !== "BORRADOR") return;
     setError("");
@@ -1389,10 +1457,17 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
   async function patchLiquidacionItemAndSync(
     itemId: number,
     payload: {
+      fecha_servicio?: string | null;
+      origen?: string | null;
+      destino?: string | null;
       placa?: string | null;
+      conductor?: string | null;
+      manifiesto_numero?: string | null;
+      remesa?: string | null;
       tarifa_tercero?: number | null;
       tarifa_cliente?: number | null;
       rentabilidad?: number | null;
+      descripcion?: string | null;
     }
   ) {
     const updated = await api.patchConciliacionItem(itemId, payload);
@@ -2479,9 +2554,9 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 )}
               </div>
 
-              {(showLiquidacionContratoFijoPanel || !(user.rol === "COINTRA" && selected.estado === "BORRADOR")) && (
+              {((showLiquidacionContratoFijoPanel || itemsLiquidacion.length > 0) || !(user.rol === "COINTRA" && selected.estado === "BORRADOR")) && (
                 <div className="mt-3 space-y-3">
-                  {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
+                  {user.rol === "COINTRA" && selected.estado === "BORRADOR" && showLiquidacionContratoFijoPanel && (
                     <>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
@@ -2588,6 +2663,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                 </th>
                               )}
                               <th className="border-b border-indigo-100 px-2 py-1 text-left">Placa</th>
+                              <th className="border-b border-indigo-100 px-2 py-1 text-left">Configuración vehículo</th>
                               <th className="border-b border-indigo-100 px-2 py-1 text-left">Tipo</th>
                               <th className="border-b border-indigo-100 px-2 py-1 text-left">Estado</th>
                               {user.rol !== "CLIENTE" && (
@@ -2635,6 +2711,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                     item.placa ?? "-"
                                   )}
                                 </td>
+                                <td className="px-2 py-1">{getConfiguracionVehiculoByPlaca(item.placa)}</td>
                                 <td className="px-2 py-1">{item.liquidacion_es_relevo ? "Conductor relevo" : "Contrato fijo"}</td>
                                 <td className="px-2 py-1">
                                   <span
@@ -2699,14 +2776,23 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                 )}
                                 {user.rol === "COINTRA" && selected.estado === "BORRADOR" && (
                                   <td className="px-2 py-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => void eliminarRegistroLiquidacion(item.id)}
-                                      disabled={removingLiquidacionItemId === item.id}
-                                      className="inline-flex items-center rounded-full border border-danger/30 bg-white px-2 py-1 text-[10px] font-semibold text-danger transition hover:bg-danger/5 disabled:opacity-50"
-                                    >
-                                      {removingLiquidacionItemId === item.id ? "Eliminando..." : "Eliminar"}
-                                    </button>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => editarRegistroLiquidacion(item)}
+                                        className="inline-flex items-center rounded-full border border-indigo-200 bg-white px-2 py-1 text-[10px] font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                                      >
+                                        Editar
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setLiquidacionItemDeleteConfirmId(item.id)}
+                                        disabled={removingLiquidacionItemId === item.id}
+                                        className="inline-flex items-center rounded-full border border-danger/30 bg-white px-2 py-1 text-[10px] font-semibold text-danger transition hover:bg-danger/5 disabled:opacity-50"
+                                      >
+                                        {removingLiquidacionItemId === item.id ? "Eliminando..." : "Eliminar"}
+                                      </button>
+                                    </div>
                                   </td>
                                 )}
                               </tr>
@@ -3446,6 +3532,46 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
           className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
         />
       </ActionModal>
+
+      <ActionModal
+        open={!!liquidacionItemEditModal}
+        title={liquidacionItemEditModal ? `Editar registro liquidación #${liquidacionItemEditModal.id}` : "Editar registro liquidación"}
+        confirmText="Guardar cambios"
+        onClose={() => setLiquidacionItemEditModal(null)}
+        onConfirm={onConfirmEditLiquidacionRegistro}
+      >
+        <input
+          value={liquidacionItemEditModal?.placa ?? ""}
+          onChange={(e) =>
+            setLiquidacionItemEditModal((prev) => (prev ? { ...prev, placa: e.target.value.toUpperCase() } : prev))
+          }
+          placeholder="Placa"
+          className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+        <input
+          type="number"
+          value={liquidacionItemEditModal?.tarifa_tercero ?? ""}
+          onChange={(e) =>
+            setLiquidacionItemEditModal((prev) => (prev ? { ...prev, tarifa_tercero: e.target.value } : prev))
+          }
+          placeholder="Valor tercero"
+          className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+      </ActionModal>
+
+      <ActionModal
+        open={liquidacionItemDeleteConfirmId !== null}
+        title={
+          liquidacionItemDeleteConfirmId !== null
+            ? `¿Eliminar registro de liquidación #${liquidacionItemDeleteConfirmId}?`
+            : "¿Eliminar registro de liquidación?"
+        }
+        description="Este registro se quitará del listado de liquidación contrato fijo en esta conciliación."
+        confirmText="Sí, eliminar registro"
+        confirmTone="danger"
+        onClose={() => setLiquidacionItemDeleteConfirmId(null)}
+        onConfirm={confirmarEliminarRegistroLiquidacion}
+      />
 
       <ActionModal
         open={!!confirmModal}

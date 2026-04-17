@@ -14,6 +14,24 @@ function formatMoney(value: number | null | undefined): string {
   return `$ ${formatCOP(value)}`;
 }
 
+function getDateSortValue(value: string | null | undefined): number {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(normalized);
+  if (!Number.isNaN(parsed)) return parsed;
+  const fallback = Date.parse(`${normalized}T00:00:00`);
+  if (!Number.isNaN(fallback)) return fallback;
+  return Number.POSITIVE_INFINITY;
+}
+
+function sortByFechaAsc<T extends { fecha_servicio?: string | null; id?: number }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const dateDiff = getDateSortValue(a.fecha_servicio) - getDateSortValue(b.fecha_servicio);
+    if (dateDiff !== 0) return dateDiff;
+    return (a.id ?? 0) - (b.id ?? 0);
+  });
+}
+
 function toSpanishError(error: unknown): string {
   const message = (error as Error)?.message || "";
   if (!message) return "Ocurrio un error inesperado";
@@ -420,7 +438,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       return normalize(value).includes(normalize(filterValue));
     };
 
-    return viajes.filter((v) => {
+    const filtered = viajes.filter((v) => {
       const estadoVisible = getEstadoVisibleViaje(v);
       if (filtroEstadoViaje !== "TODOS") {
         if (filtroEstadoViaje === "EN_REVISION" && estadoVisible !== "EN REVISIÓN") {
@@ -448,6 +466,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         includesFilter(conciliacionLabel, filtrosTablaViajes.conciliacion)
       );
     });
+    return sortByFechaAsc(filtered);
   }, [viajes, filtroEstadoViaje, filtrosTablaViajes, operacionById, conciliacionById]);
 
   const totalServiciosPages = Math.max(1, Math.ceil(viajesFiltrados.length / SERVICIOS_PAGE_SIZE));
@@ -631,7 +650,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       return normalize(value).includes(normalize(filterValue));
     };
 
-    return itemsConciliacion.filter((item) => {
+    const filtered = itemsConciliacion.filter((item) => {
       const tipoLabel = getItemServicioLabel(item);
       const estadoLabel = item.estado.toUpperCase();
       return (
@@ -645,6 +664,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         includesFilter(item.manifiesto_numero, filtrosTablaItemsConciliacion.manifiesto)
       );
     });
+    return sortByFechaAsc(filtered);
   }, [itemsConciliacion, filtrosTablaItemsConciliacion]);
   const itemsViajeBajoLiquidacionFiltrados = useMemo(() => {
     const normalize = (value: string | number | null | undefined) =>
@@ -659,7 +679,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       return normalize(value).includes(normalize(filterValue));
     };
 
-    return itemsViajeBajoLiquidacion.filter((item) => {
+    const filtered = itemsViajeBajoLiquidacion.filter((item) => {
       const tipoLabel = getItemServicioLabel(item);
       const estadoLabel = item.estado.toUpperCase();
       return (
@@ -673,6 +693,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
         includesFilter(item.manifiesto_numero, filtrosTablaItemsViajeBajoLiquidacion.manifiesto)
       );
     });
+    return sortByFechaAsc(filtered);
   }, [itemsViajeBajoLiquidacion, filtrosTablaItemsViajeBajoLiquidacion]);
   const itemsLiquidacion = useMemo(
     () => items.filter((item) => !!item.liquidacion_contrato_fijo),

@@ -1232,6 +1232,18 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       return;
     }
 
+    // Validar si el viaje tiene manifiesto asociado
+    const itemConManifiesto = items.find(
+      (it) => it.viaje_id === viajeId && (it.manifiesto_numero ?? "").trim() !== ""
+    );
+    if (itemConManifiesto) {
+      setSaveResultModal({
+        title: "No se puede quitar el viaje",
+        description: `El viaje tiene el manifiesto "${itemConManifiesto.manifiesto_numero}" asociado. Primero debes desasociar el manifiesto del viaje.`,
+      });
+      return;
+    }
+
     setError("");
     try {
       await api.quitarViajeConciliacion(selected.id, viajeId);

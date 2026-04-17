@@ -2989,16 +2989,28 @@ def detach_viaje_from_conciliacion(
     if not viaje or viaje.conciliacion_id != conciliacion_id:
         raise HTTPException(status_code=404, detail="Viaje no encontrado en esta conciliacion")
 
-    # Limpia todos los items VIAJE vinculados para ese viaje en esta conciliacion.
-    (
-        db.query(ConciliacionItem)
+    # Obtener IDs de los items a eliminar para limpiar historial primero.
+    item_ids_to_delete = [
+        row[0]
+        for row in db.query(ConciliacionItem.id)
         .filter(
             ConciliacionItem.conciliacion_id == conciliacion_id,
             ConciliacionItem.tipo == ItemTipo.VIAJE,
             ConciliacionItem.viaje_id == viaje_id,
         )
-        .delete(synchronize_session=False)
-    )
+        .all()
+    ]
+
+    if item_ids_to_delete:
+        # Desvincula historial_cambios para evitar FK violation
+        db.query(HistorialCambio).filter(
+            HistorialCambio.item_id.in_(item_ids_to_delete)
+        ).update({HistorialCambio.item_id: None}, synchronize_session=False)
+
+        # Limpia todos los items VIAJE vinculados para ese viaje en esta conciliacion.
+        db.query(ConciliacionItem).filter(
+            ConciliacionItem.id.in_(item_ids_to_delete)
+        ).delete(synchronize_session=False)
 
     viaje.conciliacion_id = None
     viaje.estado_conciliacion = None

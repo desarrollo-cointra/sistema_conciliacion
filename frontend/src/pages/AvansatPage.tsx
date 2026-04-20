@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../services/api";
-import { AvansatCacheRow, User } from "../types";
+import { AvansatCacheRow, AvansatCacheStats, User } from "../types";
 
 interface Props {
   user: User;
@@ -32,6 +32,7 @@ export function AvansatPage({ user }: Props) {
     estado: "",
     manifiesto: "",
     conciliacion_id: "",
+    has_conciliacion: "",
     fecha_emision: "",
     placa_vehiculo: "",
     trayler: "",
@@ -45,16 +46,22 @@ export function AvansatPage({ user }: Props) {
   const [syncingAyerHoy, setSyncingAyerHoy] = useState(false);
   const [error, setError] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
+  const [cacheStats, setCacheStats] = useState<AvansatCacheStats | null>(null);
 
   async function loadCache(nextPage = page, overrideFilters?: typeof filters) {
     setError("");
     setLoading(true);
     try {
       const activeFilters = overrideFilters ?? filters;
+      const hasConciliacionParam =
+        activeFilters.has_conciliacion === "si" ? true
+        : activeFilters.has_conciliacion === "no" ? false
+        : undefined;
       const data = await api.avansatCache({
         ...activeFilters,
         conciliacion_id: activeFilters.conciliacion_id ? Number(activeFilters.conciliacion_id) : undefined,
         estado: (activeFilters.estado as "SINCRONIZADO" | "") || undefined,
+        has_conciliacion: hasConciliacionParam,
         page: nextPage,
         page_size: pageSize,
       });
@@ -70,6 +77,7 @@ export function AvansatPage({ user }: Props) {
 
   useEffect(() => {
     void loadCache(1);
+    api.avansatCacheStats().then(setCacheStats).catch(() => null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -137,6 +145,7 @@ export function AvansatPage({ user }: Props) {
       estado: "",
       manifiesto: "",
       conciliacion_id: "",
+      has_conciliacion: "",
       fecha_emision: "",
       placa_vehiculo: "",
       trayler: "",
@@ -295,16 +304,6 @@ export function AvansatPage({ user }: Props) {
           <span className="text-xs font-semibold text-neutral">Mostrando {rows.length} de {totalRows}</span>
         </div>
 
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void loadCache(1)}
-            className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-          >
-            Aplicar filtros
-          </button>
-        </div>
-
         <div className="mb-3">
           {renderPaginationControls()}
         </div>
@@ -326,7 +325,7 @@ export function AvansatPage({ user }: Props) {
               </tr>
               <tr className="bg-white">
                 <th className="border-b border-border px-2 py-2"><input value={filters.manifiesto} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, manifiesto: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
-                <th className="border-b border-border px-2 py-2"><input value={filters.conciliacion_id} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, conciliacion_id: e.target.value.replace(/[^0-9]/g, "") })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
+                <th className="border-b border-border px-2 py-2"><select value={filters.has_conciliacion} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, has_conciliacion: e.target.value })); }} className="w-full rounded border border-border px-1 py-1 text-xs"><option value="">Todas</option><option value="si">Con conciliacion</option><option value="no">Sin conciliacion</option></select></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.fecha_emision} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, fecha_emision: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.placa_vehiculo} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, placa_vehiculo: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
                 <th className="border-b border-border px-2 py-2"><input value={filters.trayler} onChange={(e) => { setPage(1); setFilters((prev) => ({ ...prev, trayler: e.target.value })); }} className="w-full rounded border border-border px-2 py-1 text-xs" /></th>
@@ -376,6 +375,12 @@ export function AvansatPage({ user }: Props) {
             </tbody>
           </table>
         </div>
+
+        {cacheStats !== null && (
+          <p className="mt-3 text-xs font-semibold text-neutral">
+            Manifiestos con conciliacion asociada: <span className="text-slate-800">{cacheStats.total_con_conciliacion}</span> de {cacheStats.total_cached} en cache
+          </p>
+        )}
 
         <div className="mt-4">
           {renderPaginationControls()}

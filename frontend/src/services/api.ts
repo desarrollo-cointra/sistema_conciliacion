@@ -1,4 +1,4 @@
-import { AuthMessage, AvansatCacheListResult, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, DashboardIndicators, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { AuthMessage, AvansatCacheListResult, AvansatCacheStats, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, DashboardIndicators, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
 
@@ -494,8 +494,7 @@ export const api = {
     ciudad_origen?: string;
     ciudad_destino?: string;
     estado?: "SINCRONIZADO";
-     conciliacion_id?: number;
-     page?: number;
+     conciliacion_id?: number;     has_conciliacion?: boolean;     page?: number;
      page_size?: number;
   }) => {
     const search = new URLSearchParams();
@@ -509,11 +508,13 @@ export const api = {
     if (params?.ciudad_destino) search.set("ciudad_destino", params.ciudad_destino);
     if (params?.estado) search.set("estado", params.estado);
     if (typeof params?.conciliacion_id === "number") search.set("conciliacion_id", String(params.conciliacion_id));
+    if (typeof params?.has_conciliacion === "boolean") search.set("has_conciliacion", String(params.has_conciliacion));
     if (params?.page) search.set("page", String(params.page));
     if (params?.page_size) search.set("page_size", String(params.page_size));
     const suffix = search.toString() ? `?${search.toString()}` : "";
     return request<AvansatCacheListResult>(`/avansat/cache${suffix}`);
   },
+  avansatCacheStats: () => request<AvansatCacheStats>("/avansat/cache-stats"),
   syncAvansatCache: (daysBack = 60, maxAgeMinutes = 30) =>
     request<AvansatSyncResult>(`/avansat/sync-cache?days_back=${daysBack}&max_age_minutes=${maxAgeMinutes}`, {
       method: "POST",

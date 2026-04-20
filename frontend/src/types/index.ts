@@ -239,6 +239,11 @@ export interface AvansatCacheListResult {
   rows: AvansatCacheRow[];
 }
 
+export interface AvansatCacheStats {
+  total_cached: number;
+  total_con_conciliacion: number;
+}
+
 export interface AvansatSyncResult {
   total: number;
   inserted: number;

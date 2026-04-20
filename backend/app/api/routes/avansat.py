@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, exists
 
 from app.api.deps import get_current_user, is_cointra_admin
 from app.core.config import settings
@@ -39,6 +39,7 @@ class AvansatSyncOut(BaseModel):
 
 class AvansatCacheStatsOut(BaseModel):
     total_cached: int
+    total_con_conciliacion: int
 
 
 class AvansatCacheRowOut(BaseModel):
@@ -136,7 +137,12 @@ def avansat_cache_stats(
         raise HTTPException(status_code=403, detail="Solo Cointra puede consultar cache de Avansat")
 
     total = db.query(ManifiestoAvansat).count()
-    return AvansatCacheStatsOut(total_cached=total)
+    total_con_conciliacion = (
+        db.query(ManifiestoAvansat)
+        .filter(exists().where(ConciliacionItem.manifiesto_numero == ManifiestoAvansat.manifiesto_numero))
+        .count()
+    )
+    return AvansatCacheStatsOut(total_cached=total, total_con_conciliacion=total_con_conciliacion)
 
 
 @router.get("/cache", response_model=AvansatCacheListOut)
@@ -151,6 +157,7 @@ def avansat_cache_list(
     ciudad_destino: str | None = Query(default=None),
     estado: str | None = Query(default=None),
     conciliacion_id: int | None = Query(default=None, ge=1),
+    has_conciliacion: bool | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=10, le=500),
     db: Session = Depends(get_db),
@@ -169,6 +176,14 @@ def avansat_cache_list(
             ConciliacionItem,
             ConciliacionItem.manifiesto_numero == ManifiestoAvansat.manifiesto_numero,
         ).filter(ConciliacionItem.conciliacion_id == conciliacion_id)
+    if has_conciliacion is True:
+        query = query.filter(
+            exists().where(ConciliacionItem.manifiesto_numero == ManifiestoAvansat.manifiesto_numero)
+        )
+    elif has_conciliacion is False:
+        query = query.filter(
+            ~exists().where(ConciliacionItem.manifiesto_numero == ManifiestoAvansat.manifiesto_numero)
+        )
     if manifiesto:
         query = query.filter(ManifiestoAvansat.manifiesto_numero.contains(manifiesto.strip()))
     if fecha_emision:

@@ -335,14 +335,16 @@ export const api = {
     payload: {
       destinatario_email?: string;
       mensaje?: string;
-      archivo_factura: File;
+      archivos_factura: File[];
     }
   ) => {
     const token = localStorage.getItem("token");
     const form = new FormData();
     if (payload.destinatario_email) form.append("destinatario_email", payload.destinatario_email);
     if (payload.mensaje) form.append("mensaje", payload.mensaje);
-    form.append("archivo_factura", payload.archivo_factura);
+    for (const archivo of payload.archivos_factura) {
+      form.append("archivos_factura", archivo);
+    }
 
     const headers: Record<string, string> = {};
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -369,6 +371,32 @@ export const api = {
       throw new Error(message || "Error al enviar factura al cliente");
     }
     return response.json() as Promise<Conciliacion>;
+  },
+  descargarFacturasConciliacion: async (conciliacionId: number): Promise<Blob> => {
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/conciliaciones/${conciliacionId}/descargar-facturas`, {
+      method: "GET",
+      headers,
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      if (response.status === 401 && unauthorizedHandler) {
+        unauthorizedHandler();
+      }
+      let message = raw;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.detail === "string") {
+          message = parsed.detail;
+        }
+      } catch {
+        // fallback to raw text
+      }
+      throw new Error(message || "Error al descargar las facturas");
+    }
+    return response.blob();
   },
   descargarConciliacionExcel: async (conciliacionId: number): Promise<Blob> => {
     const token = localStorage.getItem("token");

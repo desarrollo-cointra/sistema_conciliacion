@@ -3,6 +3,7 @@ from app.models.comentario import Comentario
 from app.models.conciliacion import Conciliacion
 from app.models.conciliacion_manifiesto import ConciliacionManifiesto
 from app.models.conciliacion_item import ConciliacionItem
+from app.models.factura_archivo_cliente import FacturaArchivoCliente
 from app.models.historial_cambio import HistorialCambio
 from app.models.notificacion import Notificacion
 from app.models.operacion import Operacion

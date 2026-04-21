@@ -30,3 +30,4 @@ class Conciliacion(Base):
     comentarios = relationship("Comentario", back_populates="conciliacion", cascade="all, delete-orphan")
     viajes = relationship("Viaje", back_populates="conciliacion")
     manifiestos = relationship("ConciliacionManifiesto", back_populates="conciliacion", cascade="all, delete-orphan")
+    factura_archivos = relationship("FacturaArchivoCliente", back_populates="conciliacion", cascade="all, delete-orphan")

@@ -286,7 +286,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
   const [facturaClientePanelOpen, setFacturaClientePanelOpen] = useState(false);
   const [facturaClienteRecipient, setFacturaClienteRecipient] = useState("");
   const [facturaClienteMessage, setFacturaClienteMessage] = useState("");
-  const [facturaClienteFile, setFacturaClienteFile] = useState<File | null>(null);
+  const [facturaClienteFile, setFacturaClienteFile] = useState<File[]>([]);
   const [isSendingFacturaCliente, setIsSendingFacturaCliente] = useState(false);
   const [facturaClienteError, setFacturaClienteError] = useState("");
   const [isSendingReview, setIsSendingReview] = useState(false);
@@ -1455,7 +1455,10 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       (item) => String(item.placa || "").trim().toUpperCase() === placaNormCheck
     );
     if (placaYaExiste) {
-      setError(`Ya existe un registro de Liquidación Contrato Fijo para la placa ${placaNormCheck}.`);
+      setSaveResultModal({
+        title: "Placa ya registrada",
+        description: `Ya existe un registro de Liquidación Contrato Fijo para la placa ${placaNormCheck}.`,
+      });
       return;
     }
 
@@ -1534,6 +1537,28 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       setError(toSpanishError(e));
     } finally {
       setIsDownloadingExcel(false);
+    }
+  }
+
+  async function descargarFacturasConciliacion() {
+    if (!selected) return;
+    setError("");
+    try {
+      const blob = await api.descargarFacturasConciliacion(selected.id);
+      const contentType = blob.type;
+      const isZip = contentType === "application/zip" || contentType === "application/octet-stream";
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = isZip
+        ? `facturas_conciliacion_${selected.id}.zip`
+        : `factura_conciliacion_${selected.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      setError(toSpanishError(e));
     }
   }
 
@@ -1756,12 +1781,13 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
 
   async function sendFacturaToCliente() {
     if (!selected || user.rol !== "COINTRA") return;
-    if (!facturaClienteFile) {
-      setFacturaClienteError("Debes adjuntar el PDF de la factura.");
+    if (facturaClienteFile.length === 0) {
+      setFacturaClienteError("Debes adjuntar al menos un PDF de la factura.");
       return;
     }
-    if (!facturaClienteFile.name.toLowerCase().endsWith(".pdf")) {
-      setFacturaClienteError("El archivo adjunto debe estar en formato PDF.");
+    const invalidos = facturaClienteFile.filter((f) => !f.name.toLowerCase().endsWith(".pdf"));
+    if (invalidos.length > 0) {
+      setFacturaClienteError(`Los siguientes archivos no son PDF: ${invalidos.map((f) => f.name).join(", ")}`);
       return;
     }
 
@@ -1771,14 +1797,14 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       await api.enviarFacturaClienteConciliacion(selected.id, {
         destinatario_email: facturaClienteRecipient || undefined,
         mensaje: facturaClienteMessage || undefined,
-        archivo_factura: facturaClienteFile,
+        archivos_factura: facturaClienteFile,
       });
       await onRefreshConciliaciones();
       await loadItems(selected.id);
       setFacturaClientePanelOpen(false);
       setFacturaClienteRecipient("");
       setFacturaClienteMessage("");
-      setFacturaClienteFile(null);
+      setFacturaClienteFile([]);
       setReviewSuccessMessage("Factura enviada al cliente con PDF adjunto. La conciliación quedó en estado FACTURADO.");
     } catch (e) {
       setFacturaClienteError(toSpanishError(e));
@@ -3080,6 +3106,19 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 <img src={excelLogo} alt="Excel" className="h-5 w-5" />
                 Descargar
               </button>
+              {selected.factura_cliente_enviada && (
+                <button
+                  type="button"
+                  onClick={() => void descargarFacturasConciliacion()}
+                  className="inline-flex items-center gap-2 rounded-full border border-lime-200 bg-white px-3 py-2 text-xs font-semibold text-lime-800 shadow-sm transition hover:bg-lime-50"
+                  title="Descargar facturas adjuntas"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  Facturas
+                </button>
+              )}
               <span className={`inline-flex rounded-full px-4 py-2 text-sm font-bold uppercase tracking-wide shadow-sm ${getConciliacionEstadoClasses(selected)}`}>
                 {getConciliacionEstadoLabel(selected).split("_").join(" ")}
               </span>
@@ -3168,9 +3207,6 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 Listado de servicios asociados a la conciliación #{selected.id}.
               </p>
             </div>
-          </div>
-          <div className="mt-2 mb-1">
-            <h4 className="text-sm font-bold text-slate-800">Servicios Adicionales</h4>
           </div>
           {((user.rol === "COINTRA" && selected.estado === "BORRADOR") || itemsLiquidacion.length > 0) && (
             <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
@@ -3649,7 +3685,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                                     <td className="px-3 py-2">{item.placa || "-"}</td>
                                     <td className="px-3 py-2">
                                       {isDisponibilidadItem(item) ? (
-                                        <span className="text-xs italic text-slate-400">N/A</span>
+                                        <span className="text-slate-400">—</span>
                                       ) : user.rol === "COINTRA" && selected.estado === "BORRADOR" ? (
                                         editingManifiestoItemId === item.id ? (
                                           <div className="flex items-center gap-1">
@@ -4139,11 +4175,16 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                     <input
                       type="file"
                       accept="application/pdf,.pdf"
-                      onChange={(e) => setFacturaClienteFile(e.target.files?.[0] ?? null)}
+                      multiple
+                      onChange={(e) => setFacturaClienteFile(Array.from(e.target.files ?? []))}
                       className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none file:mr-3 file:rounded-md file:border-0 file:bg-lime-100 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-lime-800"
                     />
-                    {facturaClienteFile && (
-                      <p className="mt-1 text-[11px] text-slate-700">Adjunto: {facturaClienteFile.name}</p>
+                    {facturaClienteFile.length > 0 && (
+                      <p className="mt-1 text-[11px] text-slate-700">
+                        {facturaClienteFile.length === 1
+                          ? `Adjunto: ${facturaClienteFile[0].name}`
+                          : `${facturaClienteFile.length} archivos adjuntos: ${facturaClienteFile.map((f) => f.name).join(", ")}`}
+                      </p>
                     )}
                   </div>
                   <div className="flex justify-end">
@@ -4165,11 +4206,18 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               )}
             </div>
           )}
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <h4 className="text-sm font-bold text-slate-800">Servicios Adicionales</h4>
+                <p className="text-xs text-neutral">Servicios facturables fuera del contrato fijo.</p>
+              </div>
+            </div>
           {loadingItems ? (
-            <p className="text-sm text-neutral">Cargando items...</p>
+            <p className="px-4 py-3 text-sm text-neutral">Cargando items...</p>
           ) : (
             <>
-              {error && <p className="text-sm font-medium text-danger">{error}</p>}
+              {error && <p className="px-4 py-3 text-sm font-medium text-danger">{error}</p>}
               <div className="overflow-x-auto">
                 <table className="min-w-full border-collapse text-sm">
                   <thead>
@@ -4599,6 +4647,7 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               )}
             </>
           )}
+          </div>
         </section>
       )}
       </>

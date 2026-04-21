@@ -1,6 +1,7 @@
 from datetime import date
 from io import BytesIO
 import json
+import zipfile
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -18,6 +19,7 @@ from app.models.comentario import Comentario
 from app.models.conciliacion import Conciliacion
 from app.models.conciliacion_item import ConciliacionItem
 from app.models.enums import ItemEstado, ItemTipo, UserRole
+from app.models.factura_archivo_cliente import FacturaArchivoCliente
 from app.models.historial_cambio import HistorialCambio
 from app.models.operacion import Operacion
 from app.models.usuario import Usuario
@@ -380,8 +382,9 @@ def _build_conciliacion_totals_map(db: Session, conciliacion_ids: list[int]) -> 
 
         if cid in conc_liquidacion_placas:
             # Tiene contrato fijo: total = liquidación (bloque 1) + adicionales (bloque 3)
-            # Bloque 2 = VIAJEs con placa que coincide con liquidación → excluir
-            if is_viaje:
+            # Bloque 2 = VIAJEs y DISPONIBILIDAD con placa que coincide con liquidación → excluir
+            is_bloque2 = is_viaje or svc_code == "DISPONIBILIDAD"
+            if is_bloque2:
                 item_placa = (item.placa or "").strip().upper()
                 if item_placa in conc_liquidacion_placas[cid]:
                     continue  # Es bloque 2, no sumar
@@ -3691,7 +3694,7 @@ def enviar_factura_cliente_conciliacion(
     conciliacion_id: int,
     destinatario_email: str | None = Form(default=None),
     mensaje: str | None = Form(default=None),
-    archivo_factura: UploadFile = File(...),
+    archivos_factura: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
@@ -3710,16 +3713,20 @@ def enviar_factura_cliente_conciliacion(
     if conc.factura_cliente_enviada:
         raise HTTPException(status_code=400, detail="La factura ya fue enviada al cliente")
 
-    if not archivo_factura.filename:
-        raise HTTPException(status_code=400, detail="Debes adjuntar el archivo PDF de la factura")
+    if not archivos_factura:
+        raise HTTPException(status_code=400, detail="Debes adjuntar al menos un archivo PDF de la factura")
 
-    filename = archivo_factura.filename.strip()
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="El archivo adjunto debe estar en formato PDF")
-
-    pdf_content = archivo_factura.file.read()
-    if not pdf_content:
-        raise HTTPException(status_code=400, detail="El archivo PDF adjunto esta vacio")
+    archivos_leidos: list[dict] = []
+    for archivo in archivos_factura:
+        if not archivo.filename:
+            raise HTTPException(status_code=400, detail="Uno de los archivos no tiene nombre")
+        fname = archivo.filename.strip()
+        if not fname.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail=f"El archivo '{fname}' debe estar en formato PDF")
+        content = archivo.file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"El archivo '{fname}' está vacío")
+        archivos_leidos.append({"filename": fname, "content": content})
 
     operacion = db.get(Operacion, conc.operacion_id)
     _validate_user_access_operacion(user, operacion)
@@ -3750,10 +3757,11 @@ def enviar_factura_cliente_conciliacion(
         body=body,
         attachments=[
             {
-                "filename": filename,
-                "content": pdf_content,
+                "filename": a["filename"],
+                "content": a["content"],
                 "mime_type": "application/pdf",
             }
+            for a in archivos_leidos
         ],
     )
     if send_result["failed"] >= len(target_emails):
@@ -3765,6 +3773,15 @@ def enviar_factura_cliente_conciliacion(
     conc.estado = "CERRADA"
     conc.factura_cliente_enviada = True
     _sync_viajes_conciliado_por_estado(db, conc.id, conc.estado)
+
+    for a in archivos_leidos:
+        db.add(FacturaArchivoCliente(
+            conciliacion_id=conc.id,
+            filename=a["filename"],
+            content=a["content"],
+            created_by=user.id,
+        ))
+
     log_change(
         db,
         usuario_id=user.id,
@@ -3785,6 +3802,50 @@ def enviar_factura_cliente_conciliacion(
     )
     db.commit()
     return conc
+
+
+@router.get("/{conciliacion_id}/descargar-facturas")
+def descargar_facturas_conciliacion(
+    conciliacion_id: int,
+    db: Session = Depends(get_db),
+    user: Usuario = Depends(get_current_user),
+):
+    conc = db.get(Conciliacion, conciliacion_id)
+    if not conc:
+        raise HTTPException(status_code=404, detail="Conciliacion no encontrada")
+
+    operacion = db.get(Operacion, conc.operacion_id)
+    _validate_user_access_operacion(user, operacion)
+    _ensure_user_can_access_conciliacion(user, conc)
+
+    archivos = (
+        db.query(FacturaArchivoCliente)
+        .filter(FacturaArchivoCliente.conciliacion_id == conciliacion_id)
+        .order_by(FacturaArchivoCliente.id.asc())
+        .all()
+    )
+    if not archivos:
+        raise HTTPException(status_code=404, detail="No hay facturas adjuntas para esta conciliacion")
+
+    if len(archivos) == 1:
+        a = archivos[0]
+        return StreamingResponse(
+            BytesIO(a.content),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{a.filename}"'},
+        )
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for a in archivos:
+            zf.writestr(a.filename, a.content)
+    buf.seek(0)
+    zip_name = f"facturas_conciliacion_{conciliacion_id}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
 
 
 @router.get("/{conciliacion_id}/descargar-excel")

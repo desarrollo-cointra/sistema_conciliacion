@@ -1,6 +1,7 @@
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Query
@@ -10,8 +11,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.conciliacion import Conciliacion
 from app.models.conciliacion_item import ConciliacionItem
-from app.models.conciliacion_manifiesto import ConciliacionManifiesto
-from app.models.enums import ItemEstado, UserRole
+from app.models.enums import ItemEstado, ItemTipo, UserRole
 from app.models.historial_cambio import HistorialCambio
 from app.models.operacion import Operacion
 from app.models.servicio import Servicio
@@ -138,6 +138,16 @@ def _summarize_items(items: list[tuple[ConciliacionItem, int]]) -> dict:
     placa_totales: dict[str, dict[str, float]] = defaultdict(lambda: {"servicios": 0.0, "ingresos": 0.0, "costos": 0.0})
 
     for item, operacion_id in items:
+        # Excluir bloque 1 (liquidación contrato fijo) — es solo referencia, no se suma
+        if item.tipo == ItemTipo.OTRO:
+            try:
+                payload = json.loads((item.descripcion or "").strip())
+                if payload.get("kind") == "LIQUIDACION_CONTRATO_FIJO":
+                    total_servicios -= 1  # no contabilizar como servicio tampoco
+                    continue
+            except Exception:
+                pass
+
         cliente = float(item.tarifa_cliente or 0)
         tercero = float(item.tarifa_tercero or 0)
         total_ingresos += cliente
@@ -275,7 +285,7 @@ def _estado_visible_viaje(viaje: Viaje) -> str:
     estado = str(viaje.estado_conciliacion or "").strip().upper()
     if viaje.conciliado or estado in {"APROBADA", "CERRADA"}:
         return "CONCILIADO"
-    if estado == "EN_REVISION":
+    if estado:  # Cualquier estado no-nulo y no-final → en revisión
         return "EN_REVISION"
     return "PENDIENTE"
 
@@ -344,39 +354,53 @@ def dashboard_indicadores(
     if not operacion_ids:
         return _build_empty_payload(mode, start, end, period_label, prev_start, prev_end)
 
-    conc_base = db.query(Conciliacion).filter(
-        Conciliacion.operacion_id.in_(operacion_ids),
-        Conciliacion.activo.is_(True),
+    # Obtener TODAS las conciliaciones activas accesibles (para derivar estado de cada una)
+    all_active_concs = (
+        db.query(Conciliacion)
+        .filter(
+            Conciliacion.operacion_id.in_(operacion_ids),
+            Conciliacion.activo.is_(True),
+        )
+        .all()
     )
-    concs = [
-        conc
-        for conc in conc_base.all()
-        if (created_date := _created_date_colombia(conc)) is not None and start <= created_date <= end
-    ]
-    conc_ids = [conc.id for conc in concs]
+    all_active_conc_ids = [c.id for c in all_active_concs]
+    all_active_conc_map = {c.id: c for c in all_active_concs}
 
-    if conc_ids:
+    # Items del período — filtrados por fecha_servicio del ítem (copiada del viaje al crearse)
+    if all_active_conc_ids:
         items_rows = (
             db.query(ConciliacionItem, Conciliacion.operacion_id)
             .join(Conciliacion, Conciliacion.id == ConciliacionItem.conciliacion_id)
             .filter(
-                Conciliacion.id.in_(conc_ids),
-                Conciliacion.activo.is_(True),
-            )
-            .all()
-        )
-        manifests = (
-            db.query(ConciliacionManifiesto)
-            .join(Conciliacion, Conciliacion.id == ConciliacionManifiesto.conciliacion_id)
-            .filter(
-                Conciliacion.id.in_(conc_ids),
-                Conciliacion.activo.is_(True),
+                Conciliacion.id.in_(all_active_conc_ids),
+                ConciliacionItem.fecha_servicio >= start,
+                ConciliacionItem.fecha_servicio <= end,
             )
             .all()
         )
     else:
         items_rows = []
-        manifests = []
+
+    # Conciliaciones del período = las que tienen ítems en el período
+    conc_ids_set: set[int] = {row[0].conciliacion_id for row in items_rows}
+    conc_ids = list(conc_ids_set)
+    concs = [c for c in all_active_concs if c.id in conc_ids_set]
+
+    # Contar manifiestos distintos enlazados a ítems del período (excluye bloque 1)
+    manifest_numbers: set[str] = set()
+    for item, _op_id in items_rows:
+        if item.tipo == ItemTipo.OTRO:
+            try:
+                payload = json.loads((item.descripcion or "").strip())
+                if payload.get("kind") == "LIQUIDACION_CONTRATO_FIJO":
+                    continue
+            except Exception:
+                pass
+        if item.manifiesto_numero:
+            mn = str(item.manifiesto_numero).strip()
+            if mn:
+                manifest_numbers.add(mn)
+    manifiestos_count = len(manifest_numbers)
 
     viajes_query = db.query(Viaje).filter(
         Viaje.operacion_id.in_(operacion_ids),
@@ -394,9 +418,23 @@ def dashboard_indicadores(
     )
     prev_viajes = prev_viajes_query.all()
 
-    summary = _summarize_viajes(viajes)
-    prev_summary = _summarize_viajes(prev_viajes)
+    # Items del período anterior — misma lógica por fecha_servicio
+    if all_active_conc_ids:
+        prev_items_rows = (
+            db.query(ConciliacionItem, Conciliacion.operacion_id)
+            .join(Conciliacion, Conciliacion.id == ConciliacionItem.conciliacion_id)
+            .filter(
+                Conciliacion.id.in_(all_active_conc_ids),
+                ConciliacionItem.fecha_servicio >= prev_start,
+                ConciliacionItem.fecha_servicio <= prev_end,
+            )
+            .all()
+        )
+    else:
+        prev_items_rows = []
+
     items_summary = _summarize_items(items_rows)
+    prev_items_summary = _summarize_items(prev_items_rows)
 
     devolucion_ids: set[int] = set()
     if conc_ids:
@@ -459,16 +497,11 @@ def dashboard_indicadores(
         else:
             viajes_pendientes += 1
 
-    manifiestos_contexto = defaultdict(int)
-    for row in manifests:
-        contexto = _enum_text(row.contexto)
-        manifiestos_contexto[contexto] += 1
-
     operaciones = db.query(Operacion).filter(Operacion.id.in_(operacion_ids)).all()
     operacion_map = {row.id: row for row in operaciones}
 
     top_operaciones = []
-    for operacion_id, values in summary["operacion_totales"].items():
+    for operacion_id, values in items_summary["operacion_totales"].items():
         ingresos = float(values["ingresos"])
         costos = float(values["costos"])
         operacion = operacion_map.get(operacion_id)
@@ -486,23 +519,21 @@ def dashboard_indicadores(
 
     cliente_totales: dict[str, dict[str, float]] = defaultdict(lambda: {"servicios": 0.0, "ingresos": 0.0, "costos": 0.0})
     tercero_totales: dict[str, dict[str, float]] = defaultdict(lambda: {"servicios": 0.0, "ingresos": 0.0, "costos": 0.0})
-    for viaje in viajes:
-        operacion = operacion_map.get(viaje.operacion_id)
+    for operacion_id, values in items_summary["operacion_totales"].items():
+        operacion = operacion_map.get(operacion_id)
         cliente_nombre = operacion.cliente.nombre if operacion and operacion.cliente else "Sin cliente"
         tercero_nombre = operacion.tercero.nombre if operacion and operacion.tercero else "Sin tercero"
-        cliente = float(viaje.tarifa_cliente or 0)
-        tercero = float(viaje.tarifa_tercero or 0)
 
-        cliente_totales[cliente_nombre]["servicios"] += 1
-        cliente_totales[cliente_nombre]["ingresos"] += cliente
-        cliente_totales[cliente_nombre]["costos"] += tercero
+        cliente_totales[cliente_nombre]["servicios"] += values["servicios"]
+        cliente_totales[cliente_nombre]["ingresos"] += values["ingresos"]
+        cliente_totales[cliente_nombre]["costos"] += values["costos"]
 
-        tercero_totales[tercero_nombre]["servicios"] += 1
-        tercero_totales[tercero_nombre]["ingresos"] += cliente
-        tercero_totales[tercero_nombre]["costos"] += tercero
+        tercero_totales[tercero_nombre]["servicios"] += values["servicios"]
+        tercero_totales[tercero_nombre]["ingresos"] += values["ingresos"]
+        tercero_totales[tercero_nombre]["costos"] += values["costos"]
 
     top_placas = []
-    for placa, values in summary["placa_totales"].items():
+    for placa, values in items_summary["placa_totales"].items():
         ingresos = float(values["ingresos"])
         costos = float(values["costos"])
         top_placas.append(
@@ -563,8 +594,8 @@ def dashboard_indicadores(
         etiqueta = str(servicio.nombre or servicio.codigo).strip().upper()
         conteo_servicios_tipo[etiqueta] = int(conteo_servicios_tipo.get(etiqueta, 0) + 1)
 
-    previous_ganancia = float(prev_summary["total_ganancia"])
-    current_ganancia = float(summary["total_ganancia"])
+    previous_ganancia = float(prev_items_summary["total_ganancia"])
+    current_ganancia = float(items_summary["total_ganancia"])
     if previous_ganancia == 0:
         variacion_ganancia = 100.0 if current_ganancia > 0 else 0.0
     else:
@@ -581,15 +612,15 @@ def dashboard_indicadores(
         },
         "kpis": {
             "conciliaciones": conc_borrador + conc_en_revision + conc_aprobada + conc_devuelta + conc_enviada_facturar + conc_facturada,
-            "servicios": int(summary["total_servicios"]),
-            "manifiestos": len(manifests),
-            "ingresos": summary["total_ingresos"],
-            "costos": summary["total_costos"],
-            "ganancia": summary["total_ganancia"],
-            "margen_pct": summary["margen_pct"],
+            "servicios": int(items_summary["total_servicios"]),
+            "manifiestos": manifiestos_count,
+            "ingresos": items_summary["total_ingresos"],
+            "costos": items_summary["total_costos"],
+            "ganancia": items_summary["total_ganancia"],
+            "margen_pct": items_summary["margen_pct"],
             "aprobacion_items_pct": items_summary["aprobacion_items_pct"],
-            "ticket_promedio": summary["ticket_promedio"],
-            "placas_activas": int(summary["placas_unicas"]),
+            "ticket_promedio": items_summary["ticket_promedio"],
+            "placas_activas": int(items_summary["placas_unicas"]),
             "variacion_ganancia_pct": variacion_ganancia,
             "viajes_pendientes": viajes_pendientes,
             "viajes_en_revision": viajes_en_revision,
@@ -614,13 +645,7 @@ def dashboard_indicadores(
                 {"label": key, "value": value}
                 for key, value in sorted(conteo_servicios_tipo.items(), key=lambda row: row[0])
             ],
-            "manifiestos_contexto": [
-                {
-                    "label": "CONTRATO FIJO" if key == "LIQUIDACION_CONTRATO_FIJO" else "CONCILIACIÓN",
-                    "value": value,
-                }
-                for key, value in sorted(manifiestos_contexto.items(), key=lambda row: row[0])
-            ],
+            "manifiestos_contexto": [],
             "serie": _build_time_series(viajes, start, end),
             "top_operaciones": top_operaciones[:8],
             "top_placas": top_placas[:8],

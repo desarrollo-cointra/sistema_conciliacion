@@ -4595,19 +4595,19 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               </div>
               <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-slate-900">
                 {user.rol === "TERCERO" && (
-                  <span>Total a cobrar: {formatMoney(totals.tarifaTercero + totalsViajesBajoLiquidacion.tarifaTercero)}</span>
+                  <span>Total a cobrar: {formatMoney(totals.tarifaTercero)}</span>
                 )}
                 {user.rol === "CLIENTE" && (
-                  <span>Total a pagar: {formatMoney(totals.tarifaCliente + totalsViajesBajoLiquidacion.tarifaCliente)}</span>
+                  <span>Total a pagar: {formatMoney(totals.tarifaCliente)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Tercero: {formatMoney(totals.tarifaTercero + totalsViajesBajoLiquidacion.tarifaTercero)}</span>
+                  <span>Total Tercero: {formatMoney(totals.tarifaTercero)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Cliente: {formatMoney(totals.tarifaCliente + totalsViajesBajoLiquidacion.tarifaCliente)}</span>
+                  <span>Total Cliente: {formatMoney(totals.tarifaCliente)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Ganancia Cointra: {formatMoney(totals.gananciaCointra + totalsViajesBajoLiquidacion.gananciaCointra)}</span>
+                  <span>Total Ganancia Cointra: {formatMoney(totals.gananciaCointra)}</span>
                 )}
               </div>
               {user.rol === "CLIENTE" && selected.estado === "EN_REVISION" && (

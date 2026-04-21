@@ -884,10 +884,15 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
   function getEstadoVisibleViaje(viaje: Viaje): "PENDIENTE" | "EN REVISIÓN" | "CONCILIADO" {
     const estadoConciliacion = viaje.estado_conciliacion ?? null;
 
-    if (estadoConciliacion === "EN_REVISION") return "EN REVISIÓN";
-    if (estadoConciliacion === "APROBADA" || estadoConciliacion === "CERRADA" || viaje.conciliado) {
+    // 3. Conciliado (aprobado o cerrado)
+    if (viaje.conciliado || estadoConciliacion === "APROBADA" || estadoConciliacion === "CERRADA") {
       return "CONCILIADO";
     }
+    // 2. Tiene conciliacion asociada pero no conciliado → en revisión
+    if (estadoConciliacion !== null) {
+      return "EN REVISIÓN";
+    }
+    // 1. Sin conciliacion → pendiente
     return "PENDIENTE";
   }
 
@@ -4590,19 +4595,19 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
               </div>
               <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-slate-900">
                 {user.rol === "TERCERO" && (
-                  <span>Total a cobrar: {formatMoney(totals.tarifaTercero)}</span>
+                  <span>Total a cobrar: {formatMoney(totals.tarifaTercero + totalsViajesBajoLiquidacion.tarifaTercero)}</span>
                 )}
                 {user.rol === "CLIENTE" && (
-                  <span>Total a pagar: {formatMoney(totals.tarifaCliente)}</span>
+                  <span>Total a pagar: {formatMoney(totals.tarifaCliente + totalsViajesBajoLiquidacion.tarifaCliente)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Tercero: {formatMoney(totals.tarifaTercero)}</span>
+                  <span>Total Tercero: {formatMoney(totals.tarifaTercero + totalsViajesBajoLiquidacion.tarifaTercero)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Cliente: {formatMoney(totals.tarifaCliente)}</span>
+                  <span>Total Cliente: {formatMoney(totals.tarifaCliente + totalsViajesBajoLiquidacion.tarifaCliente)}</span>
                 )}
                 {user.rol === "COINTRA" && (
-                  <span>Total Ganancia Cointra: {formatMoney(totals.gananciaCointra)}</span>
+                  <span>Total Ganancia Cointra: {formatMoney(totals.gananciaCointra + totalsViajesBajoLiquidacion.gananciaCointra)}</span>
                 )}
               </div>
               {user.rol === "CLIENTE" && selected.estado === "EN_REVISION" && (

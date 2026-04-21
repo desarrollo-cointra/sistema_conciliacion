@@ -362,37 +362,12 @@ def _build_conciliacion_totals_map(db: Session, conciliacion_ids: list[int]) -> 
         .all()
     )
 
-    # Detectar qué conciliaciones tienen registros de contrato fijo y sus placas
-    conc_liquidacion_placas: dict[int, set[str]] = {}
-    for item in items:
-        if _extract_liquidacion_metadata(item):
-            cid = int(item.conciliacion_id)
-            if cid not in conc_liquidacion_placas:
-                conc_liquidacion_placas[cid] = set()
-            placa = (item.placa or "").strip().upper()
-            if placa:
-                conc_liquidacion_placas[cid].add(placa)
-
     totals_map: dict[int, tuple[float, float]] = {}
     for item in items:
         cid = int(item.conciliacion_id)
-        is_liquidacion = bool(_extract_liquidacion_metadata(item))
-        svc_code = (item.servicio_codigo or "").strip().upper() if not is_liquidacion else ""
-        is_viaje = svc_code == "VIAJE"
-
-        if cid in conc_liquidacion_placas:
-            # Tiene contrato fijo: total = liquidación (bloque 1) + adicionales (bloque 3)
-            # Bloque 2 = VIAJEs y DISPONIBILIDAD con placa que coincide con liquidación → excluir
-            is_bloque2 = is_viaje or svc_code == "DISPONIBILIDAD"
-            if is_bloque2:
-                item_placa = (item.placa or "").strip().upper()
-                if item_placa in conc_liquidacion_placas[cid]:
-                    continue  # Es bloque 2, no sumar
-        else:
-            # Sin contrato fijo: total = viajes (bloque 2) + adicionales (bloque 3)
-            if is_liquidacion:
-                continue
-
+        # Bloque 1 (liquidación contrato fijo) es solo referencia, no se suma
+        if _extract_liquidacion_metadata(item):
+            continue
         current_cliente, current_tercero = totals_map.get(cid, (0.0, 0.0))
         totals_map[cid] = (
             current_cliente + float(item.tarifa_cliente or 0),

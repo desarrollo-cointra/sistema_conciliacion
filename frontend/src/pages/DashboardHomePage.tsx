@@ -956,7 +956,7 @@ export function DashboardHomePage({ user }: Props) {
           <section className="grid gap-4 lg:grid-cols-3">
             <BarList title="Servicios por tipo" rows={data.charts.items_tipo} />
             <BarList title="Items por estado" rows={data.charts.items_estado} />
-            <BarList title="Manifiestos por bloque" rows={data.charts.manifiestos_contexto} />
+            <BarList title="Costo por tipo de servicio" rows={data.charts.costo_por_tipo} />
           </section>
 
           <section className="grid gap-4 lg:grid-cols-2">

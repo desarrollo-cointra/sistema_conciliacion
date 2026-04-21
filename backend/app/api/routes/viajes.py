@@ -433,8 +433,7 @@ def deactivate_viaje(
     if not viaje:
         raise HTTPException(status_code=404, detail="Viaje no encontrado")
 
-    _ensure_viaje_mutable(viaje, db)
-
+    # COINTRA_ADMIN puede inactivar cualquier viaje sin restricción de estado
     viaje.activo = False
     db.commit()
     return {"ok": True}

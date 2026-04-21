@@ -327,7 +327,7 @@ export interface DashboardIndicators {
     conciliaciones_estado: DashboardLabelValue[];
     items_estado: DashboardLabelValue[];
     items_tipo: DashboardLabelValue[];
-    manifiestos_contexto: DashboardLabelValue[];
+    costo_por_tipo: DashboardLabelValue[];
     serie: DashboardSeriePoint[];
     top_operaciones: DashboardTopOperacionEntry[];
     top_placas: DashboardTopEntry[];

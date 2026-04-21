@@ -11,7 +11,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.conciliacion import Conciliacion
 from app.models.conciliacion_item import ConciliacionItem
-from app.models.enums import ItemEstado, ItemTipo, UserRole
+from app.models.enums import ConciliacionEstado, ItemEstado, ItemTipo, UserRole
 from app.models.historial_cambio import HistorialCambio
 from app.models.operacion import Operacion
 from app.models.servicio import Servicio
@@ -138,15 +138,10 @@ def _summarize_items(items: list[tuple[ConciliacionItem, int]]) -> dict:
     placa_totales: dict[str, dict[str, float]] = defaultdict(lambda: {"servicios": 0.0, "ingresos": 0.0, "costos": 0.0})
 
     for item, operacion_id in items:
-        # Excluir bloque 1 (liquidación contrato fijo) — es solo referencia, no se suma
-        if item.tipo == ItemTipo.OTRO:
-            try:
-                payload = json.loads((item.descripcion or "").strip())
-                if payload.get("kind") == "LIQUIDACION_CONTRATO_FIJO":
-                    total_servicios -= 1  # no contabilizar como servicio tampoco
-                    continue
-            except Exception:
-                pass
+        # Solo contar ítems que provienen de un Viaje — alinea con lo que muestra el listado
+        if item.tipo != ItemTipo.VIAJE:
+            total_servicios -= 1
+            continue
 
         cliente = float(item.tarifa_cliente or 0)
         tercero = float(item.tarifa_tercero or 0)
@@ -331,7 +326,7 @@ def _build_empty_payload(mode: str, start: date, end: date, period_label: str, p
             "top_placas": [],
             "top_clientes": [],
             "top_terceros": [],
-            "manifiestos_contexto": [],
+            "costo_por_tipo": [],
             "placa_desglose": [],
         },
     }
@@ -367,13 +362,21 @@ def dashboard_indicadores(
     all_active_conc_ids = [c.id for c in all_active_concs]
     all_active_conc_map = {c.id: c for c in all_active_concs}
 
+    # Para CLIENTE solo se muestran viajes que están en revisión o más avanzados (igual que /viajes)
+    cliente_visible_conc_ids = all_active_conc_ids
+    if user.rol == UserRole.CLIENTE:
+        cliente_visible_conc_ids = [
+            c.id for c in all_active_concs
+            if _enum_text(c.estado).upper() != ConciliacionEstado.BORRADOR.value
+        ]
+
     # Items del período — filtrados por fecha_servicio del ítem (copiada del viaje al crearse)
-    if all_active_conc_ids:
+    if cliente_visible_conc_ids:
         items_rows = (
             db.query(ConciliacionItem, Conciliacion.operacion_id)
             .join(Conciliacion, Conciliacion.id == ConciliacionItem.conciliacion_id)
             .filter(
-                Conciliacion.id.in_(all_active_conc_ids),
+                Conciliacion.id.in_(cliente_visible_conc_ids),
                 ConciliacionItem.fecha_servicio >= start,
                 ConciliacionItem.fecha_servicio <= end,
             )
@@ -420,12 +423,12 @@ def dashboard_indicadores(
     prev_viajes = prev_viajes_query.all()
 
     # Items del período anterior — misma lógica por fecha_servicio
-    if all_active_conc_ids:
+    if cliente_visible_conc_ids:
         prev_items_rows = (
             db.query(ConciliacionItem, Conciliacion.operacion_id)
             .join(Conciliacion, Conciliacion.id == ConciliacionItem.conciliacion_id)
             .filter(
-                Conciliacion.id.in_(all_active_conc_ids),
+                Conciliacion.id.in_(cliente_visible_conc_ids),
                 ConciliacionItem.fecha_servicio >= prev_start,
                 ConciliacionItem.fecha_servicio <= prev_end,
             )
@@ -552,7 +555,7 @@ def dashboard_indicadores(
 
     # Matriz viajes vs disponibilidad por placa (tarifa_tercero para TERCERO/COINTRA, tarifa_cliente para CLIENTE)
     placa_desglose_raw: dict[str, dict[str, float]] = defaultdict(lambda: {"viajes": 0.0, "disponibilidad": 0.0, "viajes_c": 0.0, "disponibilidad_c": 0.0})
-    if all_active_conc_ids:
+    if cliente_visible_conc_ids:
         desglose_rows = (
             db.query(
                 ConciliacionItem.placa,
@@ -566,7 +569,7 @@ def dashboard_indicadores(
             .outerjoin(Viaje, Viaje.id == ConciliacionItem.viaje_id)
             .outerjoin(Servicio, Servicio.id == Viaje.servicio_id)
             .filter(
-                Conciliacion.id.in_(all_active_conc_ids),
+                Conciliacion.id.in_(cliente_visible_conc_ids),
                 ConciliacionItem.fecha_servicio >= start,
                 ConciliacionItem.fecha_servicio <= end,
                 ConciliacionItem.placa.isnot(None),
@@ -652,6 +655,10 @@ def dashboard_indicadores(
         str(servicio.nombre or servicio.codigo).strip().upper(): 0
         for servicio in servicios_catalogo
     }
+    costo_servicios_tipo: dict[str, dict[str, float]] = {
+        str(servicio.nombre or servicio.codigo).strip().upper(): {"tercero": 0.0, "cliente": 0.0}
+        for servicio in servicios_catalogo
+    }
     for viaje in viajes:
         if not viaje.servicio_id:
             continue
@@ -660,6 +667,19 @@ def dashboard_indicadores(
             continue
         etiqueta = str(servicio.nombre or servicio.codigo).strip().upper()
         conteo_servicios_tipo[etiqueta] = int(conteo_servicios_tipo.get(etiqueta, 0) + 1)
+        costo_servicios_tipo[etiqueta]["tercero"] += float(viaje.tarifa_tercero or 0)
+        costo_servicios_tipo[etiqueta]["cliente"] += float(viaje.tarifa_cliente or 0)
+
+    _costo_field = "cliente" if user.rol == UserRole.CLIENTE else "tercero"
+    costo_por_tipo = sorted(
+        [
+            {"label": k.title(), "value": round(v[_costo_field], 2)}
+            for k, v in costo_servicios_tipo.items()
+            if v["tercero"] > 0 or v["cliente"] > 0
+        ],
+        key=lambda row: row["value"],
+        reverse=True,
+    )
 
     previous_ganancia = float(prev_items_summary["total_ganancia"])
     current_ganancia = float(items_summary["total_ganancia"])
@@ -705,14 +725,15 @@ def dashboard_indicadores(
                 for key, value in conc_estado_counts.items()
             ],
             "items_estado": [
-                {"label": key.replace("_", " "), "value": value}
-                for key, value in sorted(items_summary["estado_items"].items(), key=lambda row: row[0])
+                {"label": "Pendiente", "value": viajes_pendientes},
+                {"label": "En revisión", "value": viajes_en_revision},
+                {"label": "Conciliados", "value": viajes_conciliados},
             ],
             "items_tipo": [
                 {"label": key, "value": value}
                 for key, value in sorted(conteo_servicios_tipo.items(), key=lambda row: row[0])
             ],
-            "manifiestos_contexto": [],
+            "costo_por_tipo": costo_por_tipo,
             "serie": _build_time_series(viajes, start, end),
             "top_operaciones": top_operaciones[:8],
             "top_placas": top_placas[:8],

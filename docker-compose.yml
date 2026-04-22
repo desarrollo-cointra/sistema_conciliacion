@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16
+    container_name: conciliacion_db_v12
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: conciliacion_db_v12
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data_v12:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: conciliacion_backend_v12
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+
+  frontend:
+    build: ./frontend
+    container_name: conciliacion_frontend_v12
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data_v12:

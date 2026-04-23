@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: conciliacion_db_v12
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - postgres_data_v12:/var/lib/postgresql/data
 

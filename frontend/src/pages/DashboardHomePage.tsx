@@ -1128,28 +1128,43 @@ function KpiDrillDownModal({
   }, []);
 
   const filtered = useMemo(() => {
-    const rows = (() => {
-      switch (drillDown.type) {
-        case "pendiente":
-          return modalViajes.filter((v) => !v.estado_conciliacion);
-        case "en_revision":
-          return modalViajes.filter(
-            (v) =>
-              !!v.estado_conciliacion &&
-              !v.conciliado &&
-              v.estado_conciliacion !== "APROBADA" &&
-              v.estado_conciliacion !== "CERRADA",
-          );
-        case "conciliados":
-          return modalViajes.filter(
-            (v) => v.conciliado || v.estado_conciliacion === "APROBADA" || v.estado_conciliacion === "CERRADA",
-          );
-        case "manifiestos":
-          return modalViajes.filter((v) => !!v.manifiesto_numero);
-        default:
-          return modalViajes;
-      }
-    })();
+    // Filtrar solo viajes activos
+    const activos = modalViajes.filter((v) => v.activo !== false);
+    let rows: Viaje[] = [];
+    switch (drillDown.type) {
+      case "pendiente":
+        rows = activos.filter((v) => !v.estado_conciliacion);
+        break;
+      case "en_revision":
+        rows = activos.filter(
+          (v) =>
+            !!v.estado_conciliacion &&
+            !v.conciliado &&
+            v.estado_conciliacion !== "APROBADA" &&
+            v.estado_conciliacion !== "CERRADA",
+        );
+        break;
+      case "conciliados":
+        rows = activos.filter(
+          (v) => v.conciliado || v.estado_conciliacion === "APROBADA" || v.estado_conciliacion === "CERRADA",
+        );
+        break;
+      case "manifiestos":
+        rows = activos.filter((v) => !!v.manifiesto_numero);
+        break;
+      case "placas":
+        // Mostrar solo una fila por placa que haya tenido al menos un viaje activo en el período
+        const placasSet = new Set<string>();
+        rows = activos.filter((v) => {
+          if (!v.placa) return false;
+          if (placasSet.has(v.placa)) return false;
+          placasSet.add(v.placa);
+          return true;
+        });
+        break;
+      default:
+        rows = activos;
+    }
     const sorted = [...rows];
     if (drillDown.type === "ingresos") sorted.sort((a, b) => (b.tarifa_cliente ?? 0) - (a.tarifa_cliente ?? 0));
     else if (drillDown.type === "costos") sorted.sort((a, b) => (b.tarifa_tercero ?? 0) - (a.tarifa_tercero ?? 0));

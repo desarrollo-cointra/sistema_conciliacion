@@ -3701,6 +3701,7 @@ def enviar_factura_cliente_conciliacion(
     conciliacion_id: int,
     destinatario_email: str | None = Form(default=None),
     mensaje: str | None = Form(default=None),
+    cc_emails: str | None = Form(default=None),
     archivos_factura: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
@@ -3758,7 +3759,10 @@ def enviar_factura_cliente_conciliacion(
         f"Accede aqui: {login_url}\n\n"
     )
 
-    # TODO: Recibir cc_emails del payload y pasarlos aquí
+    # Parsear cc_emails string a lista
+    cc_list = []
+    if cc_emails:
+        cc_list = [e.strip() for e in str(cc_emails).replace(';', ',').split(',') if e.strip()]
     send_result = send_manual_email(
         target_emails,
         subject=f"Factura conciliacion {conc.nombre} #{conc.id}",
@@ -3771,7 +3775,7 @@ def enviar_factura_cliente_conciliacion(
             }
             for a in archivos_leidos
         ],
-        cc_emails=getattr(payload, "cc_emails", None),
+        cc_emails=cc_list or None,
     )
     if send_result["failed"] >= len(target_emails):
         detail = "No se pudo enviar el correo de factura al cliente"

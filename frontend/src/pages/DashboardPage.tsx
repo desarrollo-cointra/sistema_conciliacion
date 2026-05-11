@@ -27,7 +27,7 @@ import { useLocation } from "react-router-dom";
 import { ActionModal } from "../components/common/ActionModal";
 import excelLogo from "../assets/excel-logo.svg";
 import { api } from "../services/api";
-import { Conciliacion, Item, Operacion, Servicio, TarifaLookup, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { Conciliacion, CargaMasivaFilaPreview, CargaMasivaResultado, Item, Operacion, Servicio, TarifaLookup, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 import { formatCOP } from "../utils/formatters";
 
 function formatMoney(value: number | null | undefined): string {
@@ -363,6 +363,16 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
       clearSelectionOnSuccess?: boolean;
     } | null
   >(null);
+  // --- Carga masiva de viajes ---
+  const bulkUploadFileRef = useRef<HTMLInputElement | null>(null);
+  const [bulkUploadOperacionId, setBulkUploadOperacionId] = useState<number | null>(null);
+  const [bulkUploadFile, setBulkUploadFile] = useState<File | null>(null);
+  const [bulkPreviewData, setBulkPreviewData] = useState<CargaMasivaFilaPreview[] | null>(null);
+  const [bulkPreviewLoading, setBulkPreviewLoading] = useState(false);
+  const [bulkPreviewError, setBulkPreviewError] = useState("");
+  const [bulkUploadLoading, setBulkUploadLoading] = useState(false);
+  const [bulkResultado, setBulkResultado] = useState<CargaMasivaResultado | null>(null);
+  // --- fin carga masiva ---
   const selectedConciliacionRef = useRef<HTMLElement | null>(null);
   const reviewRecipientDirtyRef = useRef(false);
   const suggestedReviewForConciliacionRef = useRef<number | null>(null);
@@ -2433,6 +2443,84 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                   Guardar servicio
                 </button>
               </form>
+
+              {/* Sección carga masiva */}
+              <div className="mt-5 border-t border-border pt-5">
+                <h3 className="mb-2 text-sm font-semibold text-slate-900">Carga masiva desde Excel</h3>
+                <p className="mb-3 text-xs text-neutral">
+                  Carga múltiples viajes/adicionales a la vez usando un archivo Excel. Primero selecciona la operación, luego el archivo.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const blob = await api.descargarPlantillaViajes();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "plantilla_viajes.xlsx";
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      } catch (err) {
+                        setError(toSpanishError(err));
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100"
+                  >
+                    <img src={excelLogo} alt="Excel" className="h-4 w-4" />
+                    Descargar plantilla
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const opId = Number(viajeForm.operacion_id);
+                      if (!opId) {
+                        setError("Selecciona una operación antes de cargar el archivo.");
+                        return;
+                      }
+                      setBulkUploadOperacionId(opId);
+                      setBulkPreviewError("");
+                      bulkUploadFileRef.current?.click();
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 transition hover:bg-sky-100"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5-5m0 0l5 5m-5-5v12" />
+                    </svg>
+                    Carga masiva
+                  </button>
+                  <input
+                    ref={bulkUploadFileRef}
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file || !bulkUploadOperacionId) return;
+                      setBulkUploadFile(file);
+                      setBulkPreviewData(null);
+                      setBulkPreviewError("");
+                      setBulkPreviewLoading(true);
+                      try {
+                        const preview = await api.previewCargaMasivaViajes(bulkUploadOperacionId, file);
+                        setBulkPreviewData(preview);
+                      } catch (err) {
+                        setBulkPreviewError(toSpanishError(err));
+                      } finally {
+                        setBulkPreviewLoading(false);
+                      }
+                    }}
+                  />
+                </div>
+                {bulkPreviewLoading && (
+                  <p className="mt-3 text-xs text-neutral">Validando archivo...</p>
+                )}
+                {bulkPreviewError && (
+                  <p className="mt-3 text-xs text-danger">{bulkPreviewError}</p>
+                )}
+              </div>
             </div>
             ) : (
               <p className="text-sm text-neutral">Selecciona el módulo y consulta el listado de servicios en el contenedor inferior.</p>
@@ -5170,6 +5258,199 @@ export function DashboardPage({ user, operaciones, conciliaciones, onRefreshConc
                 <div className="h-3 w-full animate-pulse rounded bg-slate-200" />
                 <div className="h-3 w-5/6 animate-pulse rounded bg-slate-200" />
                 <div className="h-3 w-2/3 animate-pulse rounded bg-slate-200" />
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* ===== MODAL PREVIEW CARGA MASIVA ===== */}
+      {bulkPreviewData !== null &&
+        createPortal(
+          <div className="fixed inset-0 z-[150] flex items-start justify-center bg-slate-900/50 p-4 pt-12 backdrop-blur-sm">
+            <div className="flex max-h-[85vh] w-full max-w-5xl flex-col rounded-2xl border border-border bg-white shadow-2xl">
+              {/* Cabecera */}
+              <div className="flex items-center justify-between border-b border-border px-6 py-4">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Vista previa — Carga masiva de viajes</h2>
+                  <p className="mt-0.5 text-xs text-neutral">
+                    Revisa los registros antes de confirmar la carga. Solo se guardarán las filas válidas.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setBulkPreviewData(null); setBulkUploadFile(null); }}
+                  className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Resumen */}
+              {(() => {
+                const validos = bulkPreviewData.filter((r) => r.valido).length;
+                const invalidos = bulkPreviewData.length - validos;
+                return (
+                  <div className="flex flex-wrap gap-3 border-b border-border bg-slate-50 px-6 py-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      {validos} fila{validos !== 1 ? "s" : ""} válida{validos !== 1 ? "s" : ""}
+                    </span>
+                    {invalidos > 0 && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-3 py-1 text-xs font-semibold text-danger">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                        {invalidos} fila{invalidos !== 1 ? "s" : ""} con error
+                      </span>
+                    )}
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                      Total: {bulkPreviewData.length} filas
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Tabla */}
+              <div className="flex-1 overflow-auto px-6 py-3">
+                <table className="min-w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-neutral">
+                      <th className="border-b border-border px-2 py-2 text-left">Fila</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Estado</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Tipo Servicio</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Título</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Fecha</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Placa</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Origen</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Destino</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Conductor</th>
+                      <th className="border-b border-border px-2 py-2 text-right">Tarifa Tercero</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Manifiesto</th>
+                      <th className="border-b border-border px-2 py-2 text-left">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bulkPreviewData.map((fila) => (
+                      <tr
+                        key={fila.fila}
+                        className={`border-b border-border last:border-0 ${fila.valido ? "" : "bg-danger/5"}`}
+                      >
+                        <td className="px-2 py-1.5 text-slate-600">{fila.fila}</td>
+                        <td className="px-2 py-1.5">
+                          {fila.valido ? (
+                            <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">OK</span>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger">Error</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5">{fila.tipo_servicio ?? "-"}</td>
+                        <td className="max-w-[140px] truncate px-2 py-1.5" title={fila.titulo ?? ""}>{fila.titulo ?? "-"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{fila.fecha_servicio ?? "-"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{fila.placa ?? "-"}</td>
+                        <td className="max-w-[100px] truncate px-2 py-1.5" title={fila.origen ?? ""}>{fila.origen ?? "-"}</td>
+                        <td className="max-w-[100px] truncate px-2 py-1.5" title={fila.destino ?? ""}>{fila.destino ?? "-"}</td>
+                        <td className="px-2 py-1.5">{fila.conductor ?? "-"}</td>
+                        <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                          {fila.tarifa_tercero != null ? `$ ${fila.tarifa_tercero.toLocaleString("es-CO")}` : "-"}
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap font-mono text-xs">{fila.manifiesto_numero ?? "-"}</td>
+                        <td className="px-2 py-1.5 text-danger max-w-[200px]" title={fila.error ?? ""}>
+                          {fila.error ?? ""}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pie */}
+              <div className="flex items-center justify-end gap-3 border-t border-border px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => { setBulkPreviewData(null); setBulkUploadFile(null); }}
+                  className="rounded-lg border border-border bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                {bulkPreviewData.some((r) => r.valido) && (
+                  <button
+                    type="button"
+                    disabled={bulkUploadLoading}
+                    onClick={async () => {
+                      if (!bulkUploadFile || !bulkUploadOperacionId) return;
+                      setBulkUploadLoading(true);
+                      try {
+                        const resultado = await api.ejecutarCargaMasivaViajes(bulkUploadOperacionId, bulkUploadFile);
+                        setBulkPreviewData(null);
+                        setBulkUploadFile(null);
+                        setBulkResultado(resultado);
+                        void loadViajes();
+                      } catch (err) {
+                        setBulkPreviewError(toSpanishError(err));
+                        setBulkPreviewData(null);
+                      } finally {
+                        setBulkUploadLoading(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {bulkUploadLoading ? (
+                      <>
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                        Cargando...
+                      </>
+                    ) : (
+                      <>Confirmar carga ({bulkPreviewData.filter((r) => r.valido).length} válidas)</>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* ===== MODAL RESULTADO CARGA MASIVA ===== */}
+      {bulkResultado !== null &&
+        createPortal(
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-border bg-white shadow-2xl">
+              <div className="border-b border-border px-6 py-4">
+                <h2 className="text-base font-bold text-slate-900">Resultado de la carga masiva</h2>
+              </div>
+              <div className="space-y-3 px-6 py-5">
+                <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 flex-shrink-0 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-800">
+                      {bulkResultado.cargados} de {bulkResultado.total_filas} registros cargados exitosamente
+                    </p>
+                  </div>
+                </div>
+                {bulkResultado.errores.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <p className="mb-2 text-xs font-semibold text-amber-900">
+                      {bulkResultado.errores.length} fila{bulkResultado.errores.length !== 1 ? "s" : ""} con error (no se guardaron):
+                    </p>
+                    <ul className="max-h-40 space-y-1 overflow-y-auto">
+                      {bulkResultado.errores.map((e, i) => (
+                        <li key={i} className="text-xs text-amber-800">• {e}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end border-t border-border px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => setBulkResultado(null)}
+                  className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white transition hover:bg-primary/90"
+                >
+                  Aceptar
+                </button>
               </div>
             </div>
           </div>,

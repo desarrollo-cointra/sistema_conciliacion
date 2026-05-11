@@ -76,3 +76,19 @@ class CargaMasivaResultado(BaseModel):
     total_filas: int
     cargados: int
     errores: list[str]
+
+
+class CargaMasivaFilaPreview(BaseModel):
+    fila: int
+    tipo_servicio: str | None = None
+    titulo: str | None = None
+    fecha_servicio: str | None = None
+    placa: str | None = None
+    origen: str | None = None
+    destino: str | None = None
+    conductor: str | None = None
+    tarifa_tercero: float | None = None
+    descripcion: str | None = None
+    manifiesto_numero: str | None = None
+    valido: bool
+    error: str | None = None

@@ -199,6 +199,28 @@ export interface Notificacion {
   conciliacion_id?: number | null;
 }
 
+export interface CargaMasivaFilaPreview {
+  fila: number;
+  tipo_servicio: string | null;
+  titulo: string | null;
+  fecha_servicio: string | null;
+  placa: string | null;
+  origen: string | null;
+  destino: string | null;
+  conductor: string | null;
+  tarifa_tercero: number | null;
+  descripcion: string | null;
+  manifiesto_numero: string | null;
+  valido: boolean;
+  error: string | null;
+}
+
+export interface CargaMasivaResultado {
+  total_filas: number;
+  cargados: number;
+  errores: string[];
+}
+
 export interface DestinatarioSugerido {
   usuario_id: number;
   nombre: string;

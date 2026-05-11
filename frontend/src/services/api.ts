@@ -1,4 +1,4 @@
-import { AuthMessage, AvansatCacheListResult, AvansatCacheStats, AvansatLookup, AvansatSyncResult, CatalogoTarifa, Cliente, Conciliacion, DashboardIndicators, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
+import { AuthMessage, AvansatCacheListResult, AvansatCacheStats, AvansatLookup, AvansatSyncResult, CargaMasivaFilaPreview, CargaMasivaResultado, CatalogoTarifa, Cliente, Conciliacion, DashboardIndicators, DestinatarioSugerido, Item, LoginResponse, Notificacion, Operacion, Servicio, TarifaLookup, Tercero, TipoVehiculo, User, Vehiculo, Viaje } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
 
@@ -255,6 +255,56 @@ export const api = {
     request<{ ok: boolean }>(`/viajes/${id}/reactivar`, {
       method: "POST",
     }),
+  previewCargaMasivaViajes: async (operacionId: number, file: File): Promise<CargaMasivaFilaPreview[]> => {
+    const token = localStorage.getItem("token");
+    const form = new FormData();
+    form.append("operacion_id", String(operacionId));
+    form.append("file", file);
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/viajes/carga-masiva/preview`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      if (response.status === 401 && unauthorizedHandler) unauthorizedHandler();
+      let message = raw;
+      try { const p = JSON.parse(raw); if (typeof p.detail === "string") message = p.detail; } catch { /* noop */ }
+      throw new Error(message || "Error al previsualizar archivo");
+    }
+    return response.json() as Promise<CargaMasivaFilaPreview[]>;
+  },
+  ejecutarCargaMasivaViajes: async (operacionId: number, file: File): Promise<CargaMasivaResultado> => {
+    const token = localStorage.getItem("token");
+    const form = new FormData();
+    form.append("operacion_id", String(operacionId));
+    form.append("file", file);
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/viajes/carga-masiva`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      if (response.status === 401 && unauthorizedHandler) unauthorizedHandler();
+      let message = raw;
+      try { const p = JSON.parse(raw); if (typeof p.detail === "string") message = p.detail; } catch { /* noop */ }
+      throw new Error(message || "Error al cargar viajes");
+    }
+    return response.json() as Promise<CargaMasivaResultado>;
+  },
+  descargarPlantillaViajes: async (): Promise<Blob> => {
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/viajes/plantilla-excel`, { headers });
+    if (!response.ok) throw new Error("No se pudo descargar la plantilla");
+    return response.blob();
+  },
   viajesPendientesConciliacion: (conciliacionId: number) =>
     request<Viaje[]>(`/conciliaciones/${conciliacionId}/viajes-pendientes`),
   adjuntarViajesConciliacion: (conciliacionId: number, viajeIds: number[]) =>
